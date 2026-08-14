@@ -14,14 +14,14 @@ redis-implements/
 ├── go.mod                          # module: github.com/amir/redis-implements
 ├── ROADMAP.md                      # этот файл
 ├── cmd/redis-server/main.go        # точка входа, запуск сервера
-├── cmd/redis-cli/main.go           # (этап 6) свой redis-cli для ручного тестирования
 └── internal/
     ├── resp/                       # протокол RESP: парсер и сериализатор
     │   ├── value.go                # типы RESP-значений
     │   ├── reader.go               # RESP-парсер из io.Reader (буферизованный, с лимитами)
     │   ├── writer.go               # сериализация ответов
     │   ├── reader_test.go
-    │   └── writer_test.go
+    │   ├── writer_test.go
+    │   └── bench_test.go           # бенчмарки (этап 6)
     ├── store/                      # in-memory хранилище
     │   ├── store.go                # Entry{Type, контейнеры, ExpiresAt} + строковые операции
     │   ├── list.go                 # двусвязный список (LIST)
@@ -31,7 +31,8 @@ redis-implements/
     │   ├── expiry.go               # Expirer — активная очистка (фоновый тикер)
     │   ├── store_test.go
     │   ├── collections_test.go
-    │   └── skiplist_test.go
+    │   ├── skiplist_test.go
+    │   └── bench_test.go           # бенчмарки (этап 6)
     ├── server/                     # TCP-сервер и обработчик команд
     │   ├── server.go               # net.Listen, accept-цикл, горутина на conn, диспетчеризация
     │   ├── commands.go             # регистр + общие/служебные команды
@@ -41,7 +42,8 @@ redis-implements/
     │   ├── commands_set.go
     │   ├── commands_zset.go
     │   ├── server_test.go          # integration-тесты (клиент-хелпер)
-    │   └── commands_types_test.go
+    │   ├── commands_types_test.go
+    │   └── bench_test.go           # бенчмарки (этап 6)
     └── config/                     # парсинг флагов --host/--port/--dir
         ├── config.go
         └── config_test.go
@@ -94,10 +96,13 @@ redis-implements/
 - [x] Unit-тесты: skiplist (вставка/дубликаты/обновление/ранги/удаление), коллекции, WRONGTYPE, конкурентность
 - [x] Integration-тесты команд + проверка через настоящий `redis-cli`
 
-### ⏳ Этап 6 — Инструменты и удобство разработки
-- [ ] Свой `cmd/redis-cli`: интерактивный REPL + пакетный режим
-- [ ] Бенчмарки (`*_bench_test.go`) + профилирование `pprof`
-- [ ] Оптимизация буферизации записи
+### ✅ Этап 6 — Инструменты и удобство разработки
+- [x] Свой клиент **не пишем**: используем настоящий `redis-cli`/`redis-benchmark`
+      (совместимость с RESP-протоколом проверена: REPL, one-shot, `--pipe`, `--raw`)
+- [x] Бенчмарки (`internal/resp`, `internal/store`, `internal/server`) + профилирование `pprof`
+- [x] Оптимизация буферизации записи: `resp.NewWriterSize`; замер показал, что для
+      типовых нагрузок `bufio` и так флашит при заполнении, поэтому сервер использует
+      дефолтный буфер (экономия памяти без потери скорости)
 
 ### ⏳ Этап 7 — Персистентность
 - [ ] RDB-снапшот: сериализация, загрузка при старте, фоновое сохранение

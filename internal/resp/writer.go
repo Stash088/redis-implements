@@ -11,9 +11,17 @@ type Writer struct {
 	bw *bufio.Writer
 }
 
-// NewWriter returns a Writer that writes RESP values to w.
+// NewWriter returns a Writer that writes RESP values to w using a default-sized
+// buffer.
 func NewWriter(w io.Writer) *Writer {
 	return &Writer{bw: bufio.NewWriter(w)}
+}
+
+// NewWriterSize returns a Writer that writes RESP values to w using a buffer of
+// the given size. Larger buffers reduce the number of underlying writes when
+// many values are buffered between Flush calls.
+func NewWriterSize(w io.Writer, size int) *Writer {
+	return &Writer{bw: bufio.NewWriterSize(w, size)}
 }
 
 // Flush flushes any buffered data to the underlying writer.

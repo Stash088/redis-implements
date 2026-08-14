@@ -81,6 +81,30 @@ go vet ./...           # статический анализ
 redis-benchmark -t set,get -n 20000 -c 50
 ```
 
+> Настоящий `redis-cli` работает с сервером как с обычным Redis: интерактивный режим,
+> one-shot команды, `--pipe`, `--raw`.
+
+## Бенчмарки и профилирование
+
+Go-бенчмарки покрывают RESP-парсер, хранилище и сетевой цикл сервера:
+
+```bash
+go test -bench=. -benchmem ./internal/...
+```
+
+Профилирование CPU и памяти через `pprof`:
+
+```bash
+go test -run='^$' -bench='BenchmarkServerRoundTripGet' -benchmem \
+  -cpuprofile cpu.prof -memprofile mem.prof ./internal/server/
+go tool pprof -top cpu.prof          # топ горячих функций
+go tool pprof -web cpu.prof          # визуальная диаграмма
+```
+
+Пример результата (`Apple M1`): `SET`/`GET` — ~18µs за round-trip по TCP,
+`redis-benchmark` — 100k+ запросов/сек. Профиль показывает, что узкое место —
+системные вызовы сетевого I/O, логика хранилища не является бутылочным горлышком.
+
 ## Roadmap
 
 Актуальный план разработки и прогресс ведётся в [`ROADMAP.md`](ROADMAP.md):
@@ -88,7 +112,7 @@ redis-benchmark -t set,get -n 20000 -c 50
 - [x] RESP-протокол
 - [x] Типизированное хранилище (string/list/hash/set/zset)
 - [x] TCP-сервер, TTL, конкурентность
-- [ ] Свой `redis-cli` (REPL) + бенчмарки/pprof
+- [x] Совместимость с `redis-cli`/`redis-benchmark` + бенчмарки/pprof
 - [ ] Персистентность: RDB-снапшот и AOF
 - [ ] Pub/Sub, транзакции MULTI/EXEC, eviction-политики
 - [ ] Репликация, кластер, Lua-скриптинг

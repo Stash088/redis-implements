@@ -7,5 +7,8 @@
 *.out
 coverage.*
 
+# Profiling (pprof)
+*.prof
+
 # OS
 .DS_Store
