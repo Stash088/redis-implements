@@ -35,6 +35,7 @@ redis-implements/
     │   └── bench_test.go           # бенчмарки (этап 6)
     ├── server/                     # TCP-сервер и обработчик команд
     │   ├── server.go               # net.Listen, accept-цикл, горутина на conn, диспетчеризация
+    │   ├── persist.go              # SAVE/BGSAVE/BGREWRITEAOF + --save политика
     │   ├── commands.go             # регистр + общие/служебные команды
     │   ├── commands_string.go      # строковые команды
     │   ├── commands_list.go
@@ -42,9 +43,17 @@ redis-implements/
     │   ├── commands_set.go
     │   ├── commands_zset.go
     │   ├── server_test.go          # integration-тесты (клиент-хелпер)
+    │   ├── persist_test.go         # перезапуск: данные на месте (RDB/AOF)
     │   ├── commands_types_test.go
     │   └── bench_test.go           # бенчмарки (этап 6)
-    └── config/                     # парсинг флагов --host/--port/--dir
+    ├── persist/                    # персистентность (этап 7)
+    │   ├── rdb.go                  # RDB writer/reader (настоящий формат Redis)
+    │   ├── aof.go                  # AOF appender/rewrite/loader + перепись TTL
+    │   ├── crc64.go                # CRC-64 (Jones), как в Redis
+    │   ├── listpack.go             # декодер listpack (list/hash/set/zset из дампов Redis 7+)
+    │   ├── lzf.go                  # декомпрессор LZF
+    │   ├── *_test.go               # round-trip, повреждения, интероп с настоящим Redis
+    └── config/                     # парсинг флагов --host/--port/--dir/--appendonly/...
         ├── config.go
         └── config_test.go
 ```
@@ -104,11 +113,23 @@ redis-implements/
       типовых нагрузок `bufio` и так флашит при заполнении, поэтому сервер использует
       дефолтный буфер (экономия памяти без потери скорости)
 
-### ⏳ Этап 7 — Персистентность
-- [ ] RDB-снапшот: сериализация, загрузка при старте, фоновое сохранение
-- [ ] AOF (Append-Only File): запись команд, rewrite, восстановление
-- [ ] Конфиг-параметры `--save`, `--appendonly`
-- [ ] Тесты: запись → перезапуск → данные на месте
+### ✅ Этап 7 — Персистентность
+- [x] **RDB** — настоящий формат Redis (version 9, опкоды SELECTDB/RESIZEDB/EXPIRETIME_MS/EOF,
+      length-энкодинг 6/14/32/64-bit, CRC-64 Jones). Плоские энкодинги: STRING/LIST/SET/HASH/ZSET_2.
+      Атомарное сохранение (tmp + fsync + rename), ленивое удаление протухших при загрузке.
+- [x] **Загрузка дампов Redis 7+**: декодер listpack (hash/set/zset listpack, quicklist2)
+      и LZF, целочисленные и LZF-энкодинги строк.
+- [x] **Интероп с настоящим Redis 8.2** (тест `internal/persist/interop_test.go`):
+      реальный `redis-server` загружает наш `dump.rdb`; наш сервер читает дамп, сделанный Redis.
+      Лимитация: legacy-типы (ziplist/intset) и hash с TTL полей не поддерживаются (понятная ошибка).
+- [x] **AOF**: RESP-журнал пишущих команд, перепись относительных TTL в абсолютные `PEXPIREAT`,
+      политики fsync `always|everysec|no`, толерантность к обрезанному хвосту,
+      `BGREWRITEAOF` (дамп набора командами + атомарная замена файла).
+- [x] **Команды**: `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `EXPIREAT`, `PEXPIREAT`.
+- [x] **Конфиг**: `--save <сек>`, `--save-changes <N>` (фоновая политика),
+      `--appendonly`, `--appendfsync`, `--dbfilename`, `--appendfilename`.
+- [x] **Тесты**: запись → перезапуск → данные на месте (все типы, TTL), повреждённые файлы,
+      checksum, обрезанный AOF-хвост, перепись TTL при AOF-загрузке.
 
 ### ⏳ Этап 8 — Продвинутые протокольные фичи
 - [ ] Pub/Sub: SUBSCRIBE/PUBLISH/UNSUBSCRIBE/PSUBSCRIBE

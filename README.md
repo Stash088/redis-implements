@@ -11,6 +11,8 @@
   - `hash` / `set` — на основе `map`;
   - `zset` — собственный **zskiplist** (dict + skip list), как в настоящем Redis.
 - **TTL / истечение** — ленивое (при чтении) + активное (фоновая горутина), `EXPIRE`, `TTL`, `PTTL`, `PERSIST`.
+- **Персистентность** — RDB-снапшоты в **настоящем формате Redis** (интероп с реальным `redis-server`),
+  AOF-журнал команд с переписью TTL, `SAVE`/`BGSAVE`/`BGREWRITEAOF`.
 - **Конкурентность** — горутина на каждое соединение + `RWMutex` на хранилище; все тесты гоняются с `-race`.
 - **Совместимость** — проверена работа с настоящим `redis-cli` и `redis-benchmark`.
 
@@ -22,6 +24,9 @@ go run ./cmd/redis-server
 
 # Другой порт
 go run ./cmd/redis-server --host 0.0.0.0 --port 6380
+
+# С персистентностью (RDB по политике --save, AOF включён)
+go run ./cmd/redis-server --dir ./data --save 60 --save-changes 1000 --appendonly
 ```
 
 Проверка с настоящим клиентом:
@@ -44,7 +49,8 @@ redis-cli TYPE foo                # string
 | Категория | Команды |
 |---|---|
 | Общие | `PING`, `ECHO`, `QUIT`, `DEL`, `EXISTS`, `TYPE`, `DBSIZE`, `FLUSHDB`, `INFO` |
-| Ключи / TTL | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST` |
+| Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST` |
+| Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY` |
 | Списки | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET` |
 | Хэши | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS`, `HKEYS`, `HVALS` |
@@ -63,10 +69,26 @@ redis-cli TYPE foo                # string
     │   ├── collections.go   # hash и set на map
     │   ├── skiplist.go      # zskiplist (как в Redis)
     │   ├── zset.go          # zset = dict + skiplist
-    │   └── expiry.go        # активное истечение (фоновая горутина)
-    ├── server/              # TCP-сервер и обработчики команд
-    └── config/              # флаги --host/--port/--dir
+    │   ├── expiry.go        # активное истечение (фоновая горутина)
+    │   └── snapshot.go      # ForEach/RestoreEntry для персистентности
+    ├── server/              # TCP-сервер и обработчики команд (вкл. SAVE/BGSAVE/BGREWRITEAOF)
+    ├── persist/             # RDB (настоящий формат) + AOF + CRC64 + listpack/LZF
+    └── config/              # флаги --host/--port/--dir/--save/--appendonly/...
 ```
+
+## Персистентность
+
+- **RDB** — настоящий формат Redis (version 9): опкоды `SELECTDB`/`RESIZEDB`/`EXPIRETIME_MS`/`EOF`,
+  length-энкодинг, CRC-64 (Jones). Сохранение атомарное (tmp + fsync + rename).
+  Реальный `redis-server` загружает наши дампы, а наш сервер — дампы Redis 7+ (listpack, LZF, int-энкодинги).
+  Лимитация загрузчика: legacy-типы (ziplist/intset) и hash с TTL полей не поддерживаются.
+- **AOF** — RESP-журнал пишущих команд. Относительные TTL (`SET … EX/PX`, `EXPIRE`, `PEXPIRE`)
+  пишутся как абсолютные `PEXPIREAT`, поэтому при загрузке сроки жизни не «съезжают».
+  `--appendfsync always|everysec|no`; обрезанный хвост при загрузке игнорируется.
+- **Политика `--save`**: фоновая горутина делает `SAVE` раз в секунду, если прошло ≥ `--save` секунд
+  и накоплено ≥ `--save-changes` изменений.
+- **Приоритет загрузки**: если `--appendonly` включён и AOF существует — грузится AOF, иначе RDB.
+- Файлы лежат в `--dir` (`dump.rdb`, `appendonly.aof` по умолчанию).
 
 ## Тестирование и качество
 
@@ -113,9 +135,9 @@ go tool pprof -web cpu.prof          # визуальная диаграмма
 - [x] Типизированное хранилище (string/list/hash/set/zset)
 - [x] TCP-сервер, TTL, конкурентность
 - [x] Совместимость с `redis-cli`/`redis-benchmark` + бенчмарки/pprof
-- [ ] Персистентность: RDB-снапшот и AOF
+- [x] Персистентность: RDB (настоящий формат) и AOF
 - [ ] Pub/Sub, транзакции MULTI/EXEC, eviction-политики
-- [ ] Репликация, кластер, Lua-скриптинг
+- [ ] Репликация, кластер, Lua-скриптинг, Streams, TLS
 
 ## Зачем это
 

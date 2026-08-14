@@ -65,6 +65,7 @@ func cmdSet(ctx *Ctx) error {
 	} else {
 		ctx.Store.SetString(key, val)
 	}
+	ctx.propagateCmd()
 	return ctx.W.WriteSimpleString("OK")
 }
 

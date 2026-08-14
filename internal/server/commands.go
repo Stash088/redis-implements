@@ -27,11 +27,16 @@ func (s *Server) registerCommands() {
 	s.register("DECRBY", cmdDecrBy)
 	s.register("EXPIRE", cmdExpire)
 	s.register("PEXPIRE", cmdPExpire)
+	s.register("EXPIREAT", cmdExpireAt)
+	s.register("PEXPIREAT", cmdPExpireAt)
 	s.register("TTL", cmdTTL)
 	s.register("PTTL", cmdPTTL)
 	s.register("PERSIST", cmdPersist)
 	s.register("DBSIZE", cmdDBSize)
 	s.register("FLUSHDB", cmdFlushDB)
+	s.register("SAVE", cmdSave)
+	s.register("BGSAVE", cmdBGSAVE)
+	s.register("BGREWRITEAOF", cmdBGREWRITEAOF)
 	s.register("INFO", cmdInfo)
 	s.register("QUIT", cmdQuit)
 
@@ -149,6 +154,35 @@ func cmdPExpire(ctx *Ctx) error {
 	return expireCommon(ctx, "pexpire", time.Millisecond)
 }
 
+func cmdExpireAt(ctx *Ctx) error {
+	return expireAtCommon(ctx, "expireat", time.Second)
+}
+
+func cmdPExpireAt(ctx *Ctx) error {
+	return expireAtCommon(ctx, "pexpireat", time.Millisecond)
+}
+
+func expireAtCommon(ctx *Ctx, cmd string, unit time.Duration) error {
+	if len(ctx.Args) != 3 {
+		wrongArgs(ctx.W, cmd)
+		return nil
+	}
+	ts, err := strconv.ParseInt(string(ctx.Args[2]), 10, 64)
+	if err != nil {
+		return ctx.W.WriteError("ERR value is not an integer or out of range")
+	}
+	var at time.Time
+	if unit == time.Millisecond {
+		at = time.UnixMilli(ts)
+	} else {
+		at = time.Unix(ts, 0)
+	}
+	if !ctx.Store.ExpireAt(ctx.Args[1], at) {
+		return ctx.W.WriteInteger(0)
+	}
+	return ctx.W.WriteInteger(1)
+}
+
 func expireCommon(ctx *Ctx, cmd string, unit time.Duration) error {
 	if len(ctx.Args) != 3 {
 		wrongArgs(ctx.W, cmd)
@@ -161,10 +195,12 @@ func expireCommon(ctx *Ctx, cmd string, unit time.Duration) error {
 	d := time.Duration(ttl) * unit
 	if d <= 0 {
 		ctx.Store.Delete(ctx.Args[1])
+		ctx.propagateCmd()
 		return ctx.W.WriteInteger(1)
 	}
 	ok := ctx.Store.Expire(ctx.Args[1], d)
 	if ok {
+		ctx.propagateCmd()
 		return ctx.W.WriteInteger(1)
 	}
 	return ctx.W.WriteInteger(0)
