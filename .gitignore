@@ -10,5 +10,8 @@ coverage.*
 # Profiling (pprof)
 *.prof
 
+# Redis dumps (from local benchmark runs)
+*.rdb
+
 # OS
 .DS_Store
