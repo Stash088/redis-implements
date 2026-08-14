@@ -1,0 +1,11 @@
+# Binaries
+/redis-server
+/redis-cli
+*.exe
+
+# Test / coverage
+*.out
+coverage.*
+
+# OS
+.DS_Store
