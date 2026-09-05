@@ -50,13 +50,15 @@ func (t Type) String() string {
 // Entry is a single key/value pair in the store. Exactly one container field is
 // meaningful, selected by Type.
 type Entry struct {
-	Type      Type
-	Str       []byte              // TypeString
-	List      *List               // TypeList
-	Hash      map[string][]byte   // TypeHash
-	Set       map[string]struct{} // TypeSet
-	ZSet      *ZSet               // TypeZSet
-	ExpiresAt time.Time           // zero value means no expiry
+	Type       Type
+	Str        []byte              // TypeString
+	List       *List               // TypeList
+	Hash       map[string][]byte   // TypeHash
+	Set        map[string]struct{} // TypeSet
+	ZSet       *ZSet               // TypeZSet
+	ExpiresAt  time.Time           // zero value means no expiry
+	cost       int                 // approximate memory footprint, incl. key
+	lastAccess int64               // nanos, updated on access (allkeys-lru)
 }
 
 // Expired reports whether the entry has a TTL that has passed.
@@ -66,17 +68,27 @@ func (e *Entry) Expired(now time.Time) bool {
 
 // Store is a thread-safe in-memory key/value store.
 type Store struct {
-	mu    sync.RWMutex
-	data  map[string]*Entry
-	clock func() time.Time // injectable for tests
+	mu        sync.RWMutex
+	data      map[string]*Entry
+	watches   map[string]map[Watcher]struct{} // WATCH/CAS registry
+	usedBytes int                             // sum of entry costs
+	clock     func() time.Time                // injectable for tests
 }
 
 // New returns an empty Store.
 func New() *Store {
 	return &Store{
-		data:  make(map[string]*Entry),
-		clock: time.Now,
+		data:    make(map[string]*Entry),
+		watches: make(map[string]map[Watcher]struct{}),
+		clock:   time.Now,
 	}
+}
+
+// UsedBytes returns the approximate memory footprint of live entries.
+func (s *Store) UsedBytes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.usedBytes
 }
 
 // Len returns the number of live keys.
@@ -103,20 +115,35 @@ func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 		return nil, false
 	}
 	if e.Expired(now) {
+		// Lazy expiration counts as a modification (like Redis), so WATCH
+		// clients get their transaction aborted.
+		s.touchLocked(k)
+		s.usedBytes -= e.cost
 		delete(s.data, k)
 		return nil, false
 	}
+	e.lastAccess = now.UnixNano()
 	return e, true
 }
 
 // newStringEntry replaces whatever is stored under key with a string entry.
 // Callers must hold s.mu.
 func (s *Store) newStringEntry(key []byte, value []byte, expiresAt time.Time) {
+	s.touchLocked(string(key))
+	k := string(key)
 	if value == nil {
-		delete(s.data, string(key))
+		if e, ok := s.data[k]; ok {
+			s.usedBytes -= e.cost
+			delete(s.data, k)
+		}
 		return
 	}
-	s.data[string(key)] = &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt}
+	cost := len(k) + len(value)
+	s.usedBytes += cost
+	if e, ok := s.data[k]; ok {
+		s.usedBytes -= e.cost
+	}
+	s.data[k] = &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost, lastAccess: s.clock().UnixNano()}
 }
 
 // GetString returns the string value stored under key. ok is false when the
@@ -181,6 +208,8 @@ func (s *Store) Delete(keys ...[]byte) int {
 			if !e.Expired(now) {
 				removed++
 			}
+			s.touchLocked(k)
+			s.usedBytes -= e.cost
 			delete(s.data, k)
 		}
 	}
@@ -216,6 +245,7 @@ func (s *Store) ExpireAt(key []byte, expiresAt time.Time) bool {
 		return false
 	}
 	e.ExpiresAt = expiresAt
+	s.touchLocked(string(key))
 	return true
 }
 
@@ -243,6 +273,7 @@ func (s *Store) Persist(key []byte) bool {
 		return false
 	}
 	e.ExpiresAt = time.Time{}
+	s.touchLocked(string(key))
 	return true
 }
 
@@ -281,6 +312,7 @@ func (s *Store) IncrBy(key []byte, delta int64) (int64, error) {
 func (s *Store) Append(key, suffix []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.touchLocked(string(key))
 	if e, ok := s.entryLocked(key); ok {
 		if e.Type != TypeString {
 			return 0, ErrWrongType
@@ -327,7 +359,11 @@ func (s *Store) Flush() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := s.lenLocked()
+	for k := range s.data {
+		s.touchLocked(k)
+	}
 	s.data = make(map[string]*Entry)
+	s.usedBytes = 0
 	return n
 }
 
@@ -340,6 +376,8 @@ func (s *Store) ExpireCycle() int {
 	n := 0
 	for k, e := range s.data {
 		if e.Expired(now) {
+			s.touchLocked(k)
+			s.usedBytes -= e.cost
 			delete(s.data, k)
 			n++
 		}

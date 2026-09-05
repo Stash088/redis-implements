@@ -13,5 +13,11 @@ coverage.*
 # Redis dumps (from local benchmark runs)
 *.rdb
 
+# AOF journals (runtime artifacts)
+*.aof
+
+# Local data directory (docker volume mount / manual runs)
+/data/
+
 # OS
 .DS_Store

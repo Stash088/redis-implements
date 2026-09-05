@@ -116,10 +116,16 @@ func (s *Store) ZAdd(key []byte, score float64, member []byte) (int, error) {
 	defer s.mu.Unlock()
 	e, ok := s.entryLocked(key)
 	if !ok {
-		e = &Entry{Type: TypeZSet, ZSet: newZSet()}
+		e = &Entry{Type: TypeZSet, ZSet: newZSet(), cost: len(string(key))}
+		s.usedBytes += len(string(key))
 		s.data[string(key)] = e
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
+	}
+	s.touchLocked(string(key))
+	s.markAccess(e)
+	if _, exists := e.ZSet.dict[string(member)]; !exists {
+		s.addCost(e, len(member)+elemOverhead)
 	}
 	if e.ZSet.Add(score, member) {
 		return 1, nil
@@ -155,13 +161,16 @@ func (s *Store) ZRem(key []byte, members ...[]byte) (int, error) {
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
+	s.touchLocked(string(key))
 	removed := 0
 	for _, m := range members {
 		if e.ZSet.Remove(m) {
+			s.addCost(e, -(len(m) + elemOverhead))
 			removed++
 		}
 	}
 	if e.ZSet.Len() == 0 {
+		s.usedBytes -= e.cost
 		delete(s.data, string(key))
 	}
 	return removed, nil

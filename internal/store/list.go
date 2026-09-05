@@ -19,6 +19,15 @@ func newList() *List { return &List{} }
 // Len returns the number of elements.
 func (l *List) Len() int { return l.len }
 
+// Items returns all values front-to-back.
+func (l *List) Items() [][]byte {
+	out := make([][]byte, 0, l.len)
+	for n := l.head; n != nil; n = n.next {
+		out = append(out, n.val)
+	}
+	return out
+}
+
 // PushFront inserts a value at the head.
 func (l *List) PushFront(v []byte) {
 	n := &listNode{val: v}

@@ -15,15 +15,31 @@ import (
 
 func startTestServer(t *testing.T) string {
 	t.Helper()
-	st := store.New()
-	exp := store.NewExpirer(st, 10*time.Millisecond)
-	exp.Start()
+	return startTestServerStore(t, store.New(), true)
+}
+
+// startTestServerStore runs a server against the given store. expirer enables
+// the background expiry loop; tests using a fake clock disable it.
+func startTestServerStore(t *testing.T, st *store.Store, expirer bool) string {
+	t.Helper()
+	if expirer {
+		exp := store.NewExpirer(st, 10*time.Millisecond)
+		exp.Start()
+		srv, err := server.New("127.0.0.1:0", st)
+		if err != nil {
+			t.Fatalf("server.New: %v", err)
+		}
+		srv.SetLogger(log.New(io.Discard, "", 0))
+		srv.Expirer = exp
+		go srv.Serve()
+		t.Cleanup(func() { srv.Close() })
+		return srv.Addr().String()
+	}
 	srv, err := server.New("127.0.0.1:0", st)
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
 	srv.SetLogger(log.New(io.Discard, "", 0))
-	srv.Expirer = exp
 	go srv.Serve()
 	t.Cleanup(func() { srv.Close() })
 	return srv.Addr().String()

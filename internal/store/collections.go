@@ -8,18 +8,23 @@ func (s *Store) ListPush(key []byte, left bool, vals ...[]byte) (int, error) {
 	defer s.mu.Unlock()
 	e, ok := s.entryLocked(key)
 	if !ok {
-		e = &Entry{Type: TypeList, List: newList()}
+		e = &Entry{Type: TypeList, List: newList(), cost: len(string(key))}
+		s.usedBytes += len(string(key))
 		s.data[string(key)] = e
 	} else if e.Type != TypeList {
 		return 0, ErrWrongType
 	}
+	s.touchLocked(string(key))
+	s.markAccess(e)
 	if left {
 		for i := range vals {
 			e.List.PushFront(vals[i])
+			s.addCost(e, len(vals[i])+elemOverhead)
 		}
 	} else {
 		for i := range vals {
 			e.List.PushBack(vals[i])
+			s.addCost(e, len(vals[i])+elemOverhead)
 		}
 	}
 	return e.List.Len(), nil
@@ -47,7 +52,9 @@ func (s *Store) ListPop(key []byte, left bool) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
+	s.addCost(e, -(len(v) + elemOverhead))
 	if e.List.Len() == 0 {
+		s.usedBytes -= e.cost
 		delete(s.data, string(key))
 	}
 	return v, true, nil
@@ -108,7 +115,13 @@ func (s *Store) ListSet(key []byte, i int, v []byte) (bool, error) {
 	if e.Type != TypeList {
 		return false, ErrWrongType
 	}
-	return e.List.Set(i, v), nil
+	old, _ := e.List.Index(i)
+	s.touchLocked(string(key))
+	okSet := e.List.Set(i, v)
+	if okSet {
+		s.addCost(e, len(v)-len(old))
+	}
+	return okSet, nil
 }
 
 // HashSet sets field to value in the hash under key, creating it if missing.
@@ -118,17 +131,22 @@ func (s *Store) HashSet(key, field, value []byte) (int, error) {
 	defer s.mu.Unlock()
 	e, ok := s.entryLocked(key)
 	if !ok {
-		e = &Entry{Type: TypeHash, Hash: make(map[string][]byte)}
+		e = &Entry{Type: TypeHash, Hash: make(map[string][]byte), cost: len(string(key))}
+		s.usedBytes += len(string(key))
 		s.data[string(key)] = e
 	} else if e.Type != TypeHash {
 		return 0, ErrWrongType
 	}
+	s.touchLocked(string(key))
+	s.markAccess(e)
 	f := string(field)
-	if _, exists := e.Hash[f]; exists {
+	if old, exists := e.Hash[f]; exists {
 		e.Hash[f] = value
+		s.addCost(e, len(value)-len(old))
 		return 0, nil
 	}
 	e.Hash[f] = value
+	s.addCost(e, len(f)+len(value))
 	return 1, nil
 }
 
@@ -179,14 +197,17 @@ func (s *Store) HashDel(key []byte, fields ...[]byte) (int, error) {
 	if e.Type != TypeHash {
 		return 0, ErrWrongType
 	}
+	s.touchLocked(string(key))
 	removed := 0
 	for _, f := range fields {
-		if _, exists := e.Hash[string(f)]; exists {
+		if old, exists := e.Hash[string(f)]; exists {
 			delete(e.Hash, string(f))
+			s.addCost(e, -(len(string(f)) + len(old)))
 			removed++
 		}
 	}
 	if len(e.Hash) == 0 {
+		s.usedBytes -= e.cost
 		delete(s.data, string(key))
 	}
 	return removed, nil
@@ -265,15 +286,19 @@ func (s *Store) SetAdd(key []byte, members ...[]byte) (int, error) {
 	defer s.mu.Unlock()
 	e, ok := s.entryLocked(key)
 	if !ok {
-		e = &Entry{Type: TypeSet, Set: make(map[string]struct{})}
+		e = &Entry{Type: TypeSet, Set: make(map[string]struct{}), cost: len(string(key))}
+		s.usedBytes += len(string(key))
 		s.data[string(key)] = e
 	} else if e.Type != TypeSet {
 		return 0, ErrWrongType
 	}
+	s.touchLocked(string(key))
+	s.markAccess(e)
 	added := 0
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; !exists {
 			e.Set[string(m)] = struct{}{}
+			s.addCost(e, len(m)+elemOverhead)
 			added++
 		}
 	}
@@ -292,14 +317,17 @@ func (s *Store) SetRem(key []byte, members ...[]byte) (int, error) {
 	if e.Type != TypeSet {
 		return 0, ErrWrongType
 	}
+	s.touchLocked(string(key))
 	removed := 0
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; exists {
 			delete(e.Set, string(m))
+			s.addCost(e, -(len(m) + elemOverhead))
 			removed++
 		}
 	}
 	if len(e.Set) == 0 {
+		s.usedBytes -= e.cost
 		delete(s.data, string(key))
 	}
 	return removed, nil

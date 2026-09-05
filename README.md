@@ -11,8 +11,16 @@
   - `hash` / `set` — на основе `map`;
   - `zset` — собственный **zskiplist** (dict + skip list), как в настоящем Redis.
 - **TTL / истечение** — ленивое (при чтении) + активное (фоновая горутина), `EXPIRE`, `TTL`, `PTTL`, `PERSIST`.
+- **Pub/Sub** — `SUBSCRIBE`/`PUBLISH`/`PSUBSCRIBE` с glob-паттернами; push-сообщения доставляются
+  отдельной горутиной «насоса», медленные подписчики отключаются (как в Redis).
+- **Транзакции** — `MULTI`/`EXEC`/`DISCARD` с очередью команд и полноценным **WATCH** (check-and-set):
+  изменение watch-ключа между `WATCH` и `EXEC` прерывает транзакцию (null-ответ).
+- **Eviction** — `--maxmemory` с политиками `noeviction`, `allkeys-lru`, `volatile-lru`,
+  `allkeys-random`, `volatile-random`, `volatile-ttl` и сэмплированием (`--maxmemory-samples`).
 - **Персистентность** — RDB-снапшоты в **настоящем формате Redis** (интероп с реальным `redis-server`),
   AOF-журнал команд с переписью TTL, `SAVE`/`BGSAVE`/`BGREWRITEAOF`.
+- **Диагностика** — `KEYS`/`SCAN` (курсор + `MATCH`/`COUNT`), `CONFIG GET/SET`, `CLIENT ID/LIST/SETNAME/GETNAME`,
+  `SLOWLOG GET/LEN/RESET` с настраиваемым порогом.
 - **Конкурентность** — горутина на каждое соединение + `RWMutex` на хранилище; все тесты гоняются с `-race`.
 - **Совместимость** — проверена работа с настоящим `redis-cli` и `redis-benchmark`.
 
@@ -27,6 +35,9 @@ go run ./cmd/redis-server --host 0.0.0.0 --port 6380
 
 # С персистентностью (RDB по политике --save, AOF включён)
 go run ./cmd/redis-server --dir ./data --save 60 --save-changes 1000 --appendonly
+
+# С ограничением памяти и eviction
+go run ./cmd/redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
 ```
 
 Проверка с настоящим клиентом:
@@ -44,18 +55,92 @@ redis-cli ZRANGE z 0 -1 WITHSCORES
 redis-cli TYPE foo                # string
 ```
 
+## Развёртывание в Docker / на VPS
+
+Сборка образа (multi-stage, статический бинарь на `alpine:3.20`, ~8-9 МБ):
+
+```bash
+docker build -t redis-implements .
+```
+
+Запуск контейнера (AOF `everysec` + RDB-политика `--save 60 --save-changes 1`, данные в volume `/data`):
+
+```bash
+docker run -d --name redis-impl --restart unless-stopped \
+    -p 6379:6379 -v /var/lib/redis-implements:/data redis-implements
+```
+
+Проверка работоспособности с любого хоста:
+
+```bash
+redis-cli -h <VPS_IP> PING               # PONG
+redis-cli -h <VPS_IP> SET hello world    # OK
+redis-cli -h <VPS_IP> GET hello          # world
+redis-cli -h <VPS_IP> RPUSH l a b c
+redis-cli -h <VPS_IP> LRANGE l 0 -1      # a b c
+redis-cli -h <VPS_IP> HSET h f v
+redis-cli -h <VPS_IP> ZADD z 1 a 2 b
+redis-cli -h <VPS_IP> INFO
+redis-benchmark -h <VPS_IP> -t set,get -n 20000 -c 50
+```
+
+Проверка персистентности через перезапуск:
+
+```bash
+redis-cli -h <VPS_IP> SET survived 1
+docker restart redis-impl
+redis-cli -h <VPS_IP> GET survived       # 1
+```
+
+Контейнер останавливается корректно: по `docker stop` (SIGTERM) делается финальный RDB-сейв
+и аккуратно закрывается AOF. Healthcheck (`docker inspect ... .State.Health.Status`) шлёт
+RESP `PING` через busybox `nc`.
+
+> **Безопасность:** команды `AUTH`/`requirepass` в реализации нет — любой, кто достучится до порта
+> 6379, управляет сервером. Не публикуйте порт наружу без ограничений. Варианты: SSH-туннель
+> (`ssh -L 6379:127.0.0.1:6379 user@VPS`) либо firewall только для вашего IP
+> (`sudo ufw allow from <ваш_IP> to any port 6379`).
+
 ## Поддерживаемые команды
 
 | Категория | Команды |
 |---|---|
 | Общие | `PING`, `ECHO`, `QUIT`, `DEL`, `EXISTS`, `TYPE`, `DBSIZE`, `FLUSHDB`, `INFO` |
-| Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST` |
+| Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `KEYS`, `SCAN` (MATCH/COUNT) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY` |
 | Списки | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET` |
 | Хэши | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS`, `HKEYS`, `HVALS` |
 | Множества | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD` |
 | Сортированные множества | `ZADD`, `ZRANGE`, `ZREVRANGE` (вкл. `WITHSCORES`), `ZSCORE`, `ZREM`, `ZCARD`, `ZRANK`, `ZREVRANK` |
+| Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBLISH` |
+| Транзакции | `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH` |
+| Сервер / диагностика | `CONFIG GET/SET`, `CLIENT ID/LIST/SETNAME/GETNAME`, `SLOWLOG GET/LEN/RESET` |
+
+## Pub/Sub и транзакции
+
+```bash
+# Терминал 1 — подписчик (каналы и glob-паттерны)
+redis-cli SUBSCRIBE news sports
+redis-cli PSUBSCRIBE 'user:*'
+
+# Терминал 2 — публикация (возвращает число получателей)
+redis-cli PUBLISH news "hello"          # 1
+redis-cli PUBLISH user:42 alice         # 1 (по паттерну)
+
+# Транзакция в одном соединении
+redis-cli
+> MULTI
+> SET k1 v1
+> INCR hits
+> EXEC                   # [OK, 1] — обе команды атомарно
+
+# WATCH: изменение ключа между WATCH и EXEC прерывает транзакцию
+> WATCH k1
+> MULTI
+> SET k1 changed
+> EXEC                   # (nil) — ключ изменил кто-то ещё
+```
 
 ## Структура проекта
 
@@ -89,6 +174,32 @@ redis-cli TYPE foo                # string
   и накоплено ≥ `--save-changes` изменений.
 - **Приоритет загрузки**: если `--appendonly` включён и AOF существует — грузится AOF, иначе RDB.
 - Файлы лежат в `--dir` (`dump.rdb`, `appendonly.aof` по умолчанию).
+
+## Ограничение памяти (eviction)
+
+```bash
+go run ./cmd/redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru --maxmemory-samples 5
+```
+
+- Учёт памяти приблизительный: длина ключа + payload (+ overhead на элемент коллекции).
+- `noeviction` (по умолчанию) — при переполнении memory-добавляющие команды получают
+  `-OOM command not allowed when used memory > 'maxmemory'.` (чтение и удаление работают).
+- `allkeys-lru` / `volatile-lru` — жертва выбирается по времени последнего доступа среди
+  `--maxmemory-samples` случайных ключей; `*-random` — случайно; `volatile-ttl` — с ближайшим TTL;
+  `volatile-*` трогают только ключи с TTL.
+- Высланные ключи в AOF не пропагируются (осознанное упрощение: при реплее набор может отличаться).
+
+## Диагностика
+
+```bash
+CONFIG GET maxmemory*                  # flattened [name, value, ...] по glob-паттерну
+CONFIG SET maxmemory 200mb             # maxmemory / maxmemory-policy / slowlog-* на лету
+CLIENT LIST                            # id, addr, name, sub/psub/multi/watch, последняя команда
+SLOWLOG GET 10                         # последние медленные команды (порог в µs)
+SLOWLOG LEN / SLOWLOG RESET
+```
+
+Порог и длина журнала: `--slowlog-log-slower-than` (µs, `-1` — выключено) и `--slowlog-max-len`.
 
 ## Тестирование и качество
 
@@ -136,7 +247,7 @@ go tool pprof -web cpu.prof          # визуальная диаграмма
 - [x] TCP-сервер, TTL, конкурентность
 - [x] Совместимость с `redis-cli`/`redis-benchmark` + бенчмарки/pprof
 - [x] Персистентность: RDB (настоящий формат) и AOF
-- [ ] Pub/Sub, транзакции MULTI/EXEC, eviction-политики
+- [x] Pub/Sub, транзакции MULTI/EXEC/WATCH, eviction, KEYS/SCAN/CONFIG/CLIENT/SLOWLOG
 - [ ] Репликация, кластер, Lua-скриптинг, Streams, TLS
 
 ## Зачем это

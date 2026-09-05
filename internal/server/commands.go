@@ -40,6 +40,24 @@ func (s *Server) registerCommands() {
 	s.register("INFO", cmdInfo)
 	s.register("QUIT", cmdQuit)
 
+	s.register("SUBSCRIBE", cmdSubscribe)
+	s.register("UNSUBSCRIBE", cmdUnsubscribe)
+	s.register("PSUBSCRIBE", cmdPSubscribe)
+	s.register("PUNSUBSCRIBE", cmdPUnsubscribe)
+	s.register("PUBLISH", cmdPublish)
+
+	s.register("MULTI", cmdMulti)
+	s.register("EXEC", cmdExec)
+	s.register("DISCARD", cmdDiscard)
+	s.register("WATCH", cmdWatch)
+	s.register("UNWATCH", cmdUnwatch)
+
+	s.register("KEYS", cmdKeys)
+	s.register("SCAN", cmdScan)
+	s.register("CONFIG", cmdConfig)
+	s.register("CLIENT", cmdClient)
+	s.register("SLOWLOG", cmdSlowlog)
+
 	s.register("LPUSH", cmdLPush)
 	s.register("RPUSH", cmdRPush)
 	s.register("LPOP", cmdLPop)
@@ -74,6 +92,38 @@ func (s *Server) registerCommands() {
 	s.register("ZREVRANK", cmdZRevRank)
 }
 
+// arity maps command names to their Redis arity: a positive n means exactly
+// n arguments (including the command name), a negative n means at least |n|.
+// It backs queue-time validation of commands inside MULTI, like Redis does.
+var arity = map[string]int{
+	// general
+	"ping": -1, "echo": 2, "type": 2, "dbsize": 1, "flushdb": -1,
+	"save": 1, "bgsave": -1, "bgrewriteaof": 1, "info": -1, "quit": -1,
+	// string
+	"set": -3, "get": 2, "del": -2, "exists": -2, "append": 3, "strlen": 2,
+	"incr": 2, "decr": 2, "incrby": 3, "decrby": 3,
+	// keyspace
+	"expire": 3, "pexpire": 3, "expireat": 3, "pexpireat": 3,
+	"ttl": 2, "pttl": 2, "persist": 2,
+	// pub/sub
+	"subscribe": -2, "unsubscribe": -1, "psubscribe": -2, "punsubscribe": -1, "publish": 3,
+	// transactions
+	"multi": 1, "exec": 1, "discard": 1, "watch": -2, "unwatch": 1,
+	// server admin
+	"keys": 2, "scan": -2, "config": -2, "client": -1, "slowlog": -2,
+	// list
+	"lpush": -3, "rpush": -3, "lpop": -2, "rpop": -2, "lrange": 4, "llen": 2,
+	"lindex": 3, "lset": 4,
+	// hash
+	"hset": -4, "hget": 3, "hgetall": 2, "hdel": -3, "hlen": 2,
+	"hexists": 3, "hkeys": 2, "hvals": 2,
+	// set
+	"sadd": -3, "srem": -3, "smembers": 2, "sismember": 3, "scard": 2,
+	// zset
+	"zadd": -4, "zrange": -4, "zrevrange": -4, "zscore": 3, "zrem": -3,
+	"zcard": 2, "zrank": -3, "zrevrank": -3,
+}
+
 func wrongArgs(w *resp.Writer, cmd string) {
 	w.WriteError("ERR wrong number of arguments for '" + cmd + "' command")
 }
@@ -99,6 +149,24 @@ func parseFloat(b []byte) (float64, bool) {
 }
 
 func cmdPing(ctx *Ctx) error {
+	// In subscribe mode Redis replies with ["pong", message].
+	if ctx.Client != nil && ctx.Client.subscribed() {
+		if len(ctx.Args) > 2 {
+			wrongArgs(ctx.W, "ping")
+			return nil
+		}
+		msg := []byte("")
+		if len(ctx.Args) == 2 {
+			msg = ctx.Args[1]
+		}
+		if err := ctx.W.WriteArrayHeader(2); err != nil {
+			return err
+		}
+		if err := ctx.W.WriteSimpleString("pong"); err != nil {
+			return err
+		}
+		return ctx.W.WriteBulkString(msg)
+	}
 	switch len(ctx.Args) {
 	case 1:
 		return ctx.W.WriteSimpleString("PONG")
@@ -274,9 +342,20 @@ func cmdInfo(ctx *Ctx) error {
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Clients\r\n")
 	fmt.Fprintf(&b, "connected_clients:%d\r\n", s.connectedClients())
+	subCh, subPat := s.PubSub.Counts()
+	fmt.Fprintf(&b, "pubsub_channels:%d\r\n", subCh)
+	fmt.Fprintf(&b, "pubsub_patterns:%d\r\n", subPat)
+	b.WriteString("\r\n")
+	fmt.Fprintf(&b, "# Memory\r\n")
+	used := ctx.Store.UsedBytes()
+	fmt.Fprintf(&b, "used_memory:%d\r\n", used)
+	fmt.Fprintf(&b, "maxmemory:%d\r\n", s.maxMemory.Load())
+	fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.maxMemoryPolicyName())
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Stats\r\n")
 	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.received)
+	fmt.Fprintf(&b, "evicted_keys:%d\r\n", s.evicted.Load())
+	fmt.Fprintf(&b, "pubsub_messages:%d\r\n", s.PubSub.Messages())
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Keyspace\r\n")
 	fmt.Fprintf(&b, "db0:keys=%d,expires=%d,avg_ttl=0\r\n", ctx.Store.Len(), 0)
