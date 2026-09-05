@@ -1,0 +1,12 @@
+.git
+*.rdb
+*.aof
+*.prof
+*.out
+coverage.*
+*.exe
+redis-server
+redis-cli
+.DS_Store
+BENCHMARKS.md
+/data
