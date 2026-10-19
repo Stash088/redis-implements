@@ -276,9 +276,98 @@ func cmdClient(ctx *Ctx) error {
 			return nil
 		}
 		return writeClientList(ctx)
+	case "info":
+		if len(ctx.Args) != 2 {
+			wrongArgs(ctx.W, "client info")
+			return nil
+		}
+		return ctx.W.WriteValue(clientInfoValue(c, time.Now()))
+	case "reply":
+		return clientReply(ctx)
+	case "kill":
+		return clientKill(ctx)
+	case "no-evict":
+		if len(ctx.Args) != 3 {
+			wrongArgs(ctx.W, "client no-evict")
+			return nil
+		}
+		return ctx.W.WriteSimpleString("OK")
+	case "no-touch":
+		if len(ctx.Args) != 3 {
+			wrongArgs(ctx.W, "client no-touch")
+			return nil
+		}
+		return ctx.W.WriteSimpleString("OK")
+	case "unblock":
+		if len(ctx.Args) < 2 {
+			wrongArgs(ctx.W, "client unblock")
+			return nil
+		}
+		return ctx.W.WriteError("ERR The client is not blocked")
 	default:
 		return ctx.W.WriteError("ERR Unknown CLIENT subcommand or wrong number of arguments for '" + string(ctx.Args[1]) + "'")
 	}
+}
+
+// clientReply implements CLIENT REPLY ON|OFF|SKIP.
+func clientReply(ctx *Ctx) error {
+	if len(ctx.Args) != 3 {
+		wrongArgs(ctx.W, "client reply")
+		return nil
+	}
+	c := ctx.Client
+	switch strings.ToLower(string(ctx.Args[2])) {
+	case "on":
+		c.replyMode = replyOn
+	case "off":
+		c.replyMode = replyOff
+		// Like Redis, the answer to this command is not sent.
+		return nil
+	case "skip":
+		c.replyMode = replySkip
+	default:
+		return ctx.W.WriteError("ERR CLIENT REPLY error: " + string(ctx.Args[2]))
+	}
+	return ctx.W.WriteSimpleString("OK")
+}
+
+// clientKill implements CLIENT KILL ID <id> and CLIENT KILL ADDR <addr>.
+func clientKill(ctx *Ctx) error {
+	if len(ctx.Args) < 3 {
+		wrongArgs(ctx.W, "client kill")
+		return nil
+	}
+	var id uint64
+	var addr string
+	switch strings.ToLower(string(ctx.Args[2])) {
+	case "id":
+		if len(ctx.Args) != 4 {
+			wrongArgs(ctx.W, "client kill id")
+			return nil
+		}
+		n, err := strconv.ParseUint(string(ctx.Args[3]), 10, 64)
+		if err != nil {
+			return ctx.W.WriteError("ERR client-id should be greater than 0")
+		}
+		id = n
+	case "addr":
+		if len(ctx.Args) != 4 {
+			wrongArgs(ctx.W, "client kill addr")
+			return nil
+		}
+		addr = string(ctx.Args[3])
+	default:
+		// CLIENT KILL <ip:port> (the old syntax).
+		addr = string(ctx.Args[2])
+	}
+	killed, err := ctx.Srv.clientKill(id, addr)
+	if err != nil {
+		return ctx.W.WriteError("ERR " + err.Error())
+	}
+	if killed == 0 {
+		return ctx.W.WriteError("ERR No such client address in client list")
+	}
+	return ctx.W.WriteInteger(int64(killed))
 }
 
 func writeClientList(ctx *Ctx) error {

@@ -12,6 +12,7 @@ var allowedInSubscribeMode = map[string]bool{
 	"punsubscribe": true,
 	"ping":         true,
 	"quit":         true,
+	"reset":        true,
 }
 
 // subCount is the total number of the client's channel and pattern

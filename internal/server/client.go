@@ -13,6 +13,13 @@ import (
 // clientSeq generates monotonically increasing client IDs (CLIENT ID).
 var clientSeq atomic.Uint64
 
+// Reply modes for CLIENT REPLY.
+const (
+	replyOn   = iota // replies are sent (the default)
+	replyOff         // replies are suppressed until CLIENT REPLY ON
+	replySkip        // the reply to the next command is suppressed
+)
+
 // pubsubQueueSize bounds pending Pub/Sub messages per client. When it fills
 // up, the client is disconnected (like Redis dropping a slow subscriber).
 const pubsubQueueSize = 256
@@ -41,6 +48,9 @@ type client struct {
 
 	// authenticated is set once the client passed the AUTH command.
 	authenticated bool
+
+	// replyMode controls whether the server sends replies (CLIENT REPLY).
+	replyMode int
 
 	// Protocol version negotiated with HELLO (2 or 3). It is read by other
 	// goroutines (the Pub/Sub hub), so it is accessed atomically.

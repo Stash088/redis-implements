@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log"
@@ -337,9 +338,34 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			c.writeMu.Unlock()
 			continue
 		}
+		// CLIENT REPLY OFF/SKIP suppresses the answer: the command runs
+		// against a throwaway writer, so nothing reaches the client. A
+		// command that turns the replies back on (CLIENT REPLY ON) still
+		// gets its answer, like in Redis.
+		mode := c.replyMode
+		suppress := mode != replyOn
+		realW := ctx.W
+		var shadow *resp.Writer
+		var shadowBuf *bytes.Buffer
+		if suppress {
+			shadowBuf = &bytes.Buffer{}
+			shadow = resp.NewWriter(shadowBuf)
+			ctx.W = shadow
+		}
 		started := time.Now()
 		err = s.executeCommand(ctx)
 		s.sl.maybeAdd(args, c.addr, c.name, time.Since(started))
+		if suppress {
+			shadow.Flush()
+			if mode == replySkip {
+				c.replyMode = replyOn
+			}
+			if mode == replyOff && c.replyMode == replyOn {
+				realW.WriteRaw(shadowBuf.Bytes())
+			}
+			c.writeMu.Unlock()
+			continue
+		}
 		if err == errQuit {
 			w.Flush()
 			c.writeMu.Unlock()

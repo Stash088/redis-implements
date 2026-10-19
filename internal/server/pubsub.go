@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -170,6 +171,36 @@ func pmessageFrame(proto int, pattern, channel string, payload []byte) resp.Valu
 		return resp.NewPush(elems)
 	}
 	return resp.NewArray(elems)
+}
+
+// channelNames returns the names of the active channels, optionally filtered
+// by a glob pattern.
+func (ps *PubSub) channelNames(pattern string) []string {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	out := make([]string, 0, len(ps.channels))
+	for ch := range ps.channels {
+		if pattern != "" && !globMatch(pattern, ch) {
+			continue
+		}
+		out = append(out, ch)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// numSub returns the number of subscribers of a channel.
+func (ps *PubSub) numSub(channel string) int {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return len(ps.channels[channel])
+}
+
+// patternCount returns the number of active patterns.
+func (ps *PubSub) patternCount() int {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return len(ps.patterns)
 }
 
 // Counts returns the number of active channels and patterns.

@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"math"
+	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -108,6 +109,42 @@ func (s *Store) Len() int {
 		}
 	}
 	return n
+}
+
+// Touch updates the last access time of the given keys and returns the
+// number of keys that exist.
+func (s *Store) Touch(keys ...[]byte) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clock()
+	n := 0
+	for _, key := range keys {
+		e, ok := s.data[string(key)]
+		if !ok || e.Expired(now) {
+			continue
+		}
+		e.lastAccess.Store(now.UnixNano())
+		n++
+	}
+	return n
+}
+
+// RandomKey returns a random live key. ok is false when the store is empty.
+func (s *Store) RandomKey() ([]byte, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := s.clock()
+	keys := make([][]byte, 0, len(s.data))
+	for k, e := range s.data {
+		if e.Expired(now) {
+			continue
+		}
+		keys = append(keys, []byte(k))
+	}
+	if len(keys) == 0 {
+		return nil, false
+	}
+	return keys[rand.Intn(len(keys))], true
 }
 
 // Stats returns the number of live keys and the number of keys that carry a

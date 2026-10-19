@@ -111,11 +111,16 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       `ERR Client sent AUTH, but no password is set`.
 - [x] Проверено живым клиентом redis-py (пароль верный/неверный).
 
-### ⏳ M6 — Админ-команды v2
+### ✅ M6 — Админ-команды v2
 
-- [ ] `COMMAND` (`COUNT`/`DOCS`/`LIST`/`INFO`), `RESET`, `FLUSHALL`, `LASTSAVE`,
-      `TIME`, `DEBUG`, `CLIENT` (`KILL`/`REPLY`/`UNBLOCK`/`NO-EVICT`/`INFO`),
-      `PUBSUB` (`CHANNELS`/`NUMSUB`/`NUMPAT`), `UNLINK`, `TOUCH`, `RANDOMKEY`.
+- [x] `COMMAND` (`COUNT`/`INFO`/`LIST`/`DOCS`) с таблицей метаданных
+      (флаги, позиции ключей, группа, краткое описание — `command_meta.go`).
+- [x] `RESET` (сбрасывает транзакцию, подписки, имя и базу; внутри MULTI —
+      ошибка, как в Redis), `LASTSAVE`, `TIME`, `RANDOMKEY`, `TOUCH`, `UNLINK`,
+      `DEBUG` (`SLEEP`/`JMAP`/`OBJECT`).
+- [x] `CLIENT`: `INFO`, `KILL ID|ADDR`, `REPLY ON|OFF|SKIP`, `NO-EVICT`,
+      `NO-TOUCH`, `UNBLOCK`.
+- [x] `PUBSUB`: `CHANNELS`, `NUMSUB`, `NUMPAT`.
 
 ### ⏳ M7 — Управление ключами
 
