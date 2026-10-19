@@ -101,10 +101,15 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
 - [x] Попутно исправлен `HSET` с несколькими парами поле-значение (как в
       Redis 4+), который раньше отвечал ошибкой.
 
-### ⏳ M5 — `AUTH` / `--requirepass`
+### ✅ M5 — `AUTH` / `--requirepass`
 
-- [ ] Флаг `--requirepass`, команда `AUTH [user] pass`, ошибки
-      `NOAUTH Authentication required.` / `WRONGPASS invalid username-password pair`.
+- [x] Флаг `--requirepass`, команда `AUTH [user] pass` (пользователь только
+      `default`), `CONFIG GET/SET requirepass` (пустой пароль отключает
+      аутентификацию), аргумент `AUTH` в `HELLO`.
+- [x] Ошибки как в Redis: `NOAUTH Authentication required.`,
+      `WRONGPASS invalid username-password pair or user is disabled.`,
+      `ERR Client sent AUTH, but no password is set`.
+- [x] Проверено живым клиентом redis-py (пароль верный/неверный).
 
 ### ⏳ M6 — Админ-команды v2
 

@@ -71,6 +71,7 @@ func main() {
 	srv.DBPath = dbPath
 	srv.AOFPath = aofPath
 	srv.StartSavePolicy(cfg.SaveSeconds, cfg.SaveChanges)
+	srv.SetRequirePass(cfg.RequirePass)
 	srv.SetMaxMemory(cfg.MaxMemory)
 	srv.SetMaxMemoryPolicy(cfg.MaxMemoryPolicy)
 	srv.SetMaxMemorySamples(int64(cfg.MaxMemorySamples))

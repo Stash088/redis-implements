@@ -193,7 +193,7 @@ redis-implements/
 | M2 | Шардирование стора (после M0–M1, по замерам) | ⏳ |
 | M3 | `SELECT` и мульти-БД (16 баз) | ✅ |
 | M4 | `HELLO` + RESP3 (map/set/double/bignum/verbatim/push) | ✅ |
-| M5 | `AUTH` / `--requirepass` | ⏳ |
+| M5 | `AUTH` / `--requirepass` | ✅ |
 | M6 | Админ-команды v2: `COMMAND`, `RESET`, `FLUSHALL`, `CLIENT KILL`, `PUBSUB CHANNELS` | ⏳ |
 | M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
 | M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |

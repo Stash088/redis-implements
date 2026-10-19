@@ -39,6 +39,9 @@ type client struct {
 	// Database selected with SELECT.
 	db int
 
+	// authenticated is set once the client passed the AUTH command.
+	authenticated bool
+
 	// Protocol version negotiated with HELLO (2 or 3). It is read by other
 	// goroutines (the Pub/Sub hub), so it is accessed atomically.
 	proto atomic.Int32
