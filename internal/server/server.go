@@ -37,7 +37,7 @@ type Server struct {
 	AOF     *persist.Appender
 	PubSub  *PubSub
 	Logger  *log.Logger
-	cmds    map[string]Handler
+	cmds    map[string]cmdSpec
 
 	// Persistence paths (empty disables the related feature).
 	DBPath  string
@@ -99,43 +99,6 @@ func (c *Ctx) propagateCmd() {
 	}
 }
 
-// aofWriteCommands are commands that mutate state and therefore belong in the
-// AOF. Commands handled inside their handler (relative TTLs) are excluded here.
-var aofWriteCommands = map[string]bool{
-	"append":  true,
-	"decr":    true,
-	"decrby":  true,
-	"del":     true,
-	"expire":  true,
-	"expireat": true,
-	"flushdb": true,
-	"hdel":    true,
-	"hset":    true,
-	"incr":    true,
-	"incrby":  true,
-	"lpop":    true,
-	"lpush":   true,
-	"lset":    true,
-	"persist": true,
-	"pexpire": true,
-	"pexpireat": true,
-	"rpop":    true,
-	"rpush":   true,
-	"sadd":    true,
-	"set":     true,
-	"srem":    true,
-	"zadd":    true,
-	"zrem":    true,
-}
-
-// aofHandlerCommands propagate from within their handlers because the rewrite
-// (relative -> absolute TTL) depends on whether the command took effect.
-var aofHandlerCommands = map[string]bool{
-	"set":     true,
-	"expire":  true,
-	"pexpire": true,
-}
-
 // propagateFromDispatch logs a write command to the AOF after execution. The
 // command must already be known to be a write command handled centrally.
 func (s *Server) propagateFromDispatch(args [][]byte) {
@@ -166,7 +129,7 @@ func New(addr string, st *store.Store) (*Server, error) {
 	s := &Server{
 		Store:   st,
 		Logger:  log.Default(),
-		cmds:    make(map[string]Handler),
+		cmds:    make(map[string]cmdSpec),
 		conns:   make(map[net.Conn]struct{}),
 		clients: make(map[net.Conn]*client),
 		PubSub:  NewPubSub(),
@@ -205,23 +168,6 @@ func (s *Server) maxMemoryPolicyName() string {
 		return *p
 	}
 	return "noeviction"
-}
-
-// memoryAddCommands lists write commands that can grow the dataset; under
-// noeviction they are denied once the store is over maxmemory.
-var memoryAddCommands = map[string]bool{
-	"append": true,
-	"decr":   true,
-	"decrby": true,
-	"hset":   true,
-	"incr":   true,
-	"incrby": true,
-	"lpush":  true,
-	"lset":   true,
-	"rpush":  true,
-	"sadd":   true,
-	"set":    true,
-	"zadd":   true,
 }
 
 // Addr returns the bound listener address (useful with port 0).
@@ -359,20 +305,21 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 // replaying the transaction queue.
 func (s *Server) executeCommand(ctx *Ctx) error {
 	name := strings.ToLower(string(ctx.Args[0]))
+	spec, _ := s.cmds[name]
 
 	// Deny memory-adding commands under noeviction once the store is over
 	// the limit, like Redis.
-	if m := s.maxMemory.Load(); m > 0 && memoryAddCommands[name] && s.maxMemoryPolicyName() == "noeviction" {
+	if m := s.maxMemory.Load(); m > 0 && spec.memAdd && s.maxMemoryPolicyName() == "noeviction" {
 		if int64(s.Store.UsedBytes()) > m {
 			return ctx.W.WriteError("OOM command not allowed when used memory > 'maxmemory'.")
 		}
 	}
 
 	err := s.dispatch(ctx)
-	if aofWriteCommands[name] && !aofHandlerCommands[name] {
+	if spec.write && !spec.aofSelf {
 		s.propagateFromDispatch(ctx.Args)
 	}
-	if aofWriteCommands[name] {
+	if spec.write {
 		s.dirty.Add(1)
 		// Evict only when a policy is configured; noeviction is handled by
 		// the pre-execution check above.
@@ -390,11 +337,11 @@ func (s *Server) dispatch(ctx *Ctx) error {
 	if ctx.Client != nil && ctx.Client.subscribed() && !allowedInSubscribeMode[name] {
 		return ctx.W.WriteError("ERR Can't execute '" + name + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")
 	}
-	f, ok := s.cmds[name]
+	spec, ok := s.cmds[name]
 	if !ok {
 		return writeUnknownCommand(ctx)
 	}
-	return f(ctx)
+	return spec.handler(ctx)
 }
 
 func writeUnknownCommand(ctx *Ctx) error {
@@ -409,9 +356,4 @@ func writeUnknownCommand(ctx *Ctx) error {
 	}
 	ctx.W.WriteError("ERR unknown command '" + string(ctx.Args[0]) + "', with args beginning with: " + b.String())
 	return nil
-}
-
-// register adds a command to the registry.
-func (s *Server) register(name string, f Handler) {
-	s.cmds[strings.ToLower(name)] = f
 }

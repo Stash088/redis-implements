@@ -1,9 +1,11 @@
 package server_test
 
 import (
-	"github.com/amir/redis-implements/internal/resp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/amir/redis-implements/internal/resp"
 )
 
 // push reads a server-pushed message (Pub/Sub frame) from the client.
@@ -168,8 +170,22 @@ func TestSubscribeCleanupOnDisconnect(t *testing.T) {
 	expectConfirm(t, sub.cmd("SUBSCRIBE", "gone"), "subscribe", "gone", 1)
 	// Drop the subscriber connection abruptly.
 	sub.conn.Close()
-	if n := pub.intWant("PUBLISH", "gone", "x"); n != 0 {
-		t.Errorf("PUBLISH after disconnect: got %d, want 0", n)
+
+	// The server learns about the closed connection asynchronously: the
+	// reader goroutine has to observe the EOF before it can reap the
+	// subscription. Until that happens the subscriber is still registered
+	// and a publish may still reach it — real Redis behaves the same way.
+	// So poll until the subscriber is gone instead of racing the reaper.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		n := pub.intWant("PUBLISH", "gone", "x")
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("PUBLISH after disconnect: got %d, want 0 (subscriber was never reaped)", n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

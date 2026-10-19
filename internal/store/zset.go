@@ -136,17 +136,23 @@ func (s *Store) ZAdd(key []byte, score float64, member []byte) (int, error) {
 // ZScore returns the score of member in the zset under key. ok is false when
 // the member or key is missing.
 func (s *Store) ZScore(key, member []byte) (float64, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
+	score, ok, err := readEntry(s, key, func(e *Entry) (float64, error) {
+		if e.Type != TypeZSet {
+			return 0, ErrWrongType
+		}
+		sc, exists := e.ZSet.Score(member)
+		if !exists {
+			return 0, errNotFound
+		}
+		return sc, nil
+	})
+	if err == errNotFound {
 		return 0, false, nil
 	}
-	if e.Type != TypeZSet {
-		return 0, false, ErrWrongType
+	if err != nil {
+		return 0, false, err
 	}
-	score, exists := e.ZSet.Score(member)
-	return score, exists, nil
+	return score, ok, nil
 }
 
 // ZRem removes members from the zset under key, returning the number removed.
@@ -179,45 +185,44 @@ func (s *Store) ZRem(key []byte, members ...[]byte) (int, error) {
 // ZCard returns the cardinality of the zset under key. ok is false when
 // missing.
 func (s *Store) ZCard(key []byte) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return 0, false, nil
-	}
-	if e.Type != TypeZSet {
-		return 0, false, ErrWrongType
-	}
-	return e.ZSet.Len(), true, nil
+	return readEntry(s, key, func(e *Entry) (int, error) {
+		if e.Type != TypeZSet {
+			return 0, ErrWrongType
+		}
+		return e.ZSet.Len(), nil
+	})
 }
 
 // ZRange returns entries in the inclusive rank range [start, stop]. When
 // reverse is true the result is ordered from highest to lowest score.
 func (s *Store) ZRange(key []byte, start, stop int, reverse bool) ([]ZEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, nil
-	}
-	if e.Type != TypeZSet {
-		return nil, ErrWrongType
-	}
-	return e.ZSet.Range(start, stop, reverse), nil
+	v, _, err := readEntry(s, key, func(e *Entry) ([]ZEntry, error) {
+		if e.Type != TypeZSet {
+			return nil, ErrWrongType
+		}
+		return e.ZSet.Range(start, stop, reverse), nil
+	})
+	return v, err
 }
 
 // ZRank returns the 0-based rank of member. When reverse is true the rank is
 // counted from the highest score. ok is false when member or key is missing.
 func (s *Store) ZRank(key, member []byte, reverse bool) (int64, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
+	rank, ok, err := readEntry(s, key, func(e *Entry) (int64, error) {
+		if e.Type != TypeZSet {
+			return 0, ErrWrongType
+		}
+		r, found := e.ZSet.Rank(member, reverse)
+		if !found {
+			return 0, errNotFound
+		}
+		return r, nil
+	})
+	if err == errNotFound {
 		return 0, false, nil
 	}
-	if e.Type != TypeZSet {
-		return 0, false, ErrWrongType
+	if err != nil {
+		return 0, false, err
 	}
-	rank, found := e.ZSet.Rank(member, reverse)
-	return rank, found, nil
+	return rank, ok, nil
 }

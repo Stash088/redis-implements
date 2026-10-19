@@ -87,7 +87,7 @@ func TestEvictCycleLRU(t *testing.T) {
 	s.GetString([]byte("old"))
 	now = now.Add(time.Second)
 
-	limit := int64(len("old")+100 + len("mid")+100 + len("new")+100 - 50)
+	limit := int64(len("old") + 100 + len("mid") + 100 + len("new") + 100 - 50)
 	n := s.EvictCycle("allkeys-lru", 5, limit)
 	if n != 1 {
 		t.Fatalf("evicted %d keys, want 1", n)

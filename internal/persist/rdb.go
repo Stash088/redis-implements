@@ -156,9 +156,9 @@ type rdbBuf struct {
 
 func newRDBBuf() *rdbBuf { return &rdbBuf{} }
 
-func (b *rdbBuf) byte(v byte)     { b.b = append(b.b, v) }
-func (b *rdbBuf) raw(v []byte)    { b.b = append(b.b, v...) }
-func (b *rdbBuf) str(v string)    { b.b = append(b.b, v...) }
+func (b *rdbBuf) byte(v byte)  { b.b = append(b.b, v) }
+func (b *rdbBuf) raw(v []byte) { b.b = append(b.b, v...) }
+func (b *rdbBuf) str(v string) { b.b = append(b.b, v...) }
 func (b *rdbBuf) writeLen(n uint64) {
 	switch {
 	case n < 1<<6:
@@ -262,10 +262,10 @@ func LoadBytes(data []byte, st *store.Store) error {
 }
 
 type rdbDecoder struct {
-	data  []byte
-	pos   int
-	st    *store.Store
-	exp   time.Time // pending expiry from EXPIRETIME_MS opcode
+	data []byte
+	pos  int
+	st   *store.Store
+	exp  time.Time // pending expiry from EXPIRETIME_MS opcode
 }
 
 func (d *rdbDecoder) header() error {

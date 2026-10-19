@@ -11,12 +11,12 @@ import (
 // txnImmediate lists commands that execute right away even inside MULTI
 // (instead of being queued).
 var txnImmediate = map[string]bool{
-	"multi":    true,
-	"exec":     true,
-	"discard":  true,
-	"watch":    true,
-	"unwatch":  true,
-	"quit":     true,
+	"multi":   true,
+	"exec":    true,
+	"discard": true,
+	"watch":   true,
+	"unwatch": true,
+	"quit":    true,
 }
 
 // noMultiCommands lists commands Redis forbids inside a transaction because
@@ -40,17 +40,14 @@ func (s *Server) queueForMulti(ctx *Ctx, name string) {
 		c.abort = true
 		return
 	}
-	if _, ok := s.cmds[name]; !ok {
+	if spec, ok := s.cmds[name]; !ok {
 		writeUnknownCommand(ctx)
 		c.abort = true
 		return
-	}
-	if n, ok := arity[name]; ok {
-		if (n > 0 && len(ctx.Args) != n) || (n < 0 && len(ctx.Args) < -n) {
-			wrongArgs(ctx.W, name)
-			c.abort = true
-			return
-		}
+	} else if n := spec.arity; (n > 0 && len(ctx.Args) != n) || (n < 0 && len(ctx.Args) < -n) {
+		wrongArgs(ctx.W, name)
+		c.abort = true
+		return
 	}
 	c.queue = append(c.queue, ctx.Args)
 	ctx.W.WriteSimpleString("QUEUED")

@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,10 @@ var ErrOverflow = errors.New("store: increment would overflow int64")
 // ErrWrongType is returned when a command is applied to a key holding a value
 // of an incompatible type.
 var ErrWrongType = errors.New("store: wrong type")
+
+// errNotFound is an internal marker used by read-only helpers to report that
+// the requested element does not exist (as opposed to a missing key).
+var errNotFound = errors.New("store: not found")
 
 // Type identifies the kind of value stored in an Entry.
 type Type uint8
@@ -58,7 +63,7 @@ type Entry struct {
 	ZSet       *ZSet               // TypeZSet
 	ExpiresAt  time.Time           // zero value means no expiry
 	cost       int                 // approximate memory footprint, incl. key
-	lastAccess int64               // nanos, updated on access (allkeys-lru)
+	lastAccess atomic.Int64        // nanos, updated on access (allkeys-lru)
 }
 
 // Expired reports whether the entry has a TTL that has passed.
@@ -106,7 +111,7 @@ func (s *Store) Len() int {
 }
 
 // entryLocked returns the live entry for key, or nil when missing/expired
-// (removing it in the latter case). Callers must hold s.mu.
+// (removing it in the latter case). Callers must hold s.mu for writing.
 func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 	now := s.clock()
 	k := string(key)
@@ -122,8 +127,53 @@ func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 		delete(s.data, k)
 		return nil, false
 	}
-	e.lastAccess = now.UnixNano()
+	e.lastAccess.Store(now.UnixNano())
 	return e, true
+}
+
+// readEntry runs a read-only operation on the entry stored under key while
+// the store's read lock is held, so several readers can work in parallel.
+// It reports ok=false when the key is missing or its TTL has passed.
+//
+// The closure must not modify the entry and must not retain it (or the
+// slices it returns) beyond the call.
+func readEntry[T any](s *Store, key []byte, fn func(e *Entry) (T, error)) (T, bool, error) {
+	var zero T
+	k := string(key)
+	s.mu.RLock()
+	e, ok := s.data[k]
+	if !ok {
+		s.mu.RUnlock()
+		return zero, false, nil
+	}
+	now := s.clock()
+	if e.Expired(now) {
+		s.mu.RUnlock()
+		// The key is gone as far as the caller is concerned; drop it from
+		// the map (and notify its watchers) in a separate write-locked
+		// step, since the read lock cannot be upgraded.
+		s.expireKey(k)
+		return zero, false, nil
+	}
+	e.lastAccess.Store(now.UnixNano())
+	v, err := fn(e)
+	s.mu.RUnlock()
+	return v, true, err
+}
+
+// expireKey removes an expired entry from the map and notifies its watchers,
+// like Redis does on a lazy lookup. It takes the write lock, so callers must
+// not hold any lock.
+func (s *Store) expireKey(k string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.data[k]
+	if !ok || !e.Expired(s.clock()) {
+		return
+	}
+	s.touchLocked(k)
+	s.usedBytes -= e.cost
+	delete(s.data, k)
 }
 
 // newStringEntry replaces whatever is stored under key with a string entry.
@@ -143,34 +193,32 @@ func (s *Store) newStringEntry(key []byte, value []byte, expiresAt time.Time) {
 	if e, ok := s.data[k]; ok {
 		s.usedBytes -= e.cost
 	}
-	s.data[k] = &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost, lastAccess: s.clock().UnixNano()}
+	e := &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost}
+	e.lastAccess.Store(s.clock().UnixNano())
+	s.data[k] = e
 }
 
 // GetString returns the string value stored under key. ok is false when the
 // key is missing. ErrWrongType is returned when the key holds a non-string.
 func (s *Store) GetString(key []byte) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, false, nil
-	}
-	if e.Type != TypeString {
-		return nil, false, ErrWrongType
-	}
-	return e.Str, true, nil
+	return readEntry(s, key, func(e *Entry) ([]byte, error) {
+		if e.Type != TypeString {
+			return nil, ErrWrongType
+		}
+		return e.Str, nil
+	})
 }
 
 // GetType returns the type of the value stored under key, or (0, false) when
 // missing.
 func (s *Store) GetType(key []byte) (Type, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
+	t, ok, err := readEntry(s, key, func(e *Entry) (Type, error) {
+		return e.Type, nil
+	})
+	if err != nil {
 		return 0, false
 	}
-	return e.Type, true
+	return t, ok
 }
 
 // SetString stores a string value under key, overwriting any existing type.
@@ -218,8 +266,8 @@ func (s *Store) Delete(keys ...[]byte) int {
 
 // Exists reports how many of the given keys exist (and are not expired).
 func (s *Store) Exists(keys ...[]byte) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	now := s.clock()
 	n := 0
 	for _, key := range keys {
@@ -252,16 +300,16 @@ func (s *Store) ExpireAt(key []byte, expiresAt time.Time) bool {
 // TTL returns the remaining time-to-live of key. The second return value is
 // false when the key does not exist.
 func (s *Store) TTL(key []byte) (time.Duration, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
+	d, ok, err := readEntry(s, key, func(e *Entry) (time.Duration, error) {
+		if e.ExpiresAt.IsZero() {
+			return -1, nil // no expiry (Redis: -1)
+		}
+		return e.ExpiresAt.Sub(s.clock()), nil
+	})
+	if err != nil || !ok {
 		return 0, false
 	}
-	if e.ExpiresAt.IsZero() {
-		return -1, true // no expiry (Redis: -1)
-	}
-	return e.ExpiresAt.Sub(s.clock()), true
+	return d, true
 }
 
 // Persist removes any TTL on key. ok is false when the key does not exist.
@@ -327,22 +375,18 @@ func (s *Store) Append(key, suffix []byte) (int, error) {
 // StrLen returns the length of the string value under key. ok is false when
 // missing.
 func (s *Store) StrLen(key []byte) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return 0, false, nil
-	}
-	if e.Type != TypeString {
-		return 0, false, ErrWrongType
-	}
-	return len(e.Str), true, nil
+	return readEntry(s, key, func(e *Entry) (int, error) {
+		if e.Type != TypeString {
+			return 0, ErrWrongType
+		}
+		return len(e.Str), nil
+	})
 }
 
 // Keys returns all live keys.
 func (s *Store) Keys() [][]byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	now := s.clock()
 	keys := make([][]byte, 0, len(s.data))
 	for k, e := range s.data {

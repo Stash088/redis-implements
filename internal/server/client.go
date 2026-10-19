@@ -45,12 +45,12 @@ type client struct {
 	// statMu guards fields read cross-goroutine by CLIENT LIST:
 	// watched, inMulti, lastCmd. Mutations happen on the connection's own
 	// goroutine; the lock is uncontended in practice.
-	statMu   sync.Mutex
-	watched  map[string]struct{}
-	nameMu   sync.Mutex
-	name     string
-	created  time.Time
-	lastCmd  string
+	statMu  sync.Mutex
+	watched map[string]struct{}
+	nameMu  sync.Mutex
+	name    string
+	created time.Time
+	lastCmd string
 }
 
 func newClient(conn net.Conn) *client {

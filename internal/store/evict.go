@@ -55,7 +55,7 @@ func (s *Store) evictOneLocked(policy string, samples int) bool {
 				victim = c
 			}
 		case "allkeys-lru", "volatile-lru":
-			if victim == nil || c.e.lastAccess < victim.e.lastAccess {
+			if victim == nil || c.e.lastAccess.Load() < victim.e.lastAccess.Load() {
 				victim = c
 			}
 		case "allkeys-random", "volatile-random":
@@ -107,7 +107,7 @@ func (s *Store) entryCostLocked(key string, e *Entry) int {
 // markAccess updates the entry's last-access timestamp (allkeys-lru).
 // Callers must hold s.mu.
 func (s *Store) markAccess(e *Entry) {
-	e.lastAccess = s.clock().UnixNano()
+	e.lastAccess.Store(s.clock().UnixNano())
 }
 
 // addCost applies a memory delta to the entry and the store total.

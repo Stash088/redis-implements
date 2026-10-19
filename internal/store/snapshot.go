@@ -29,7 +29,7 @@ func (s *Store) RestoreEntry(key string, e *Entry) {
 		s.usedBytes -= old.cost
 	}
 	e.cost = cost
-	e.lastAccess = s.clock().UnixNano()
+	e.lastAccess.Store(s.clock().UnixNano())
 	s.usedBytes += cost
 	s.data[key] = e
 }

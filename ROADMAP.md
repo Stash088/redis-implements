@@ -180,6 +180,39 @@ redis-implements/
 - [ ] Streams (XADD/XRANGE/XREAD, consumer groups)
 - [ ] TLS, Unix-сокеты, модули
 
+### 🚀 Развитие после этапа 8 — вехи M0+
+
+Подробный план (утверждён 2026-10-19) лежит в
+[`docs/roadmap-m0-plus.md`](docs/roadmap-m0-plus.md). Каждая веха — отдельная
+ветка `feat/<milestone>` + draft-MR; мержит владелец.
+
+| Веха | Содержание | Статус |
+|---|---|---|
+| **M0** | Гигиена и быстрые победы: нестабильный тест Pub/Sub, чтения на `RLock`, единый реестр команд | ✅ |
+| M1 | Батчинг пайплайна + снижение аллокаций в RESP-парсере | ⏳ |
+| M2 | Шардирование стора (после M0–M1, по замерам) | ⏳ |
+| M3 | `SELECT` и мульти-БД (16 баз) | ⏳ |
+| M4 | `HELLO` + RESP3 (map/set/double/bignum/verbatim/push) | ⏳ |
+| M5 | `AUTH` / `--requirepass` | ⏳ |
+| M6 | Админ-команды v2: `COMMAND`, `RESET`, `FLUSHALL`, `CLIENT KILL`, `PUBSUB CHANNELS` | ⏳ |
+| M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
+| M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |
+| M9 | Строки v2: `MSET`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `GETRANGE`, `SETRANGE` | ⏳ |
+| M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ⏳ |
+| M11 | Hash v2: `HINCRBY`, `HSTRLEN`, `HRANDFIELD`, `HMGET` | ⏳ |
+| M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
+| M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `LPOS` | ⏳ |
+| M14 | ZSet v2: `ZRANGEBYSCORE`/`BYLEX`, `ZINCRBY`, `ZUNIONSTORE`, `ZPOPMIN` | ⏳ |
+| M15 | Блокирующие команды: `BLPOP`, `BRPOP`, `BZPOPMIN` | ⏳ |
+| M16 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |
+| M17 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
+| M18 | Streams: персистентность (RDB-энкодинг, AOF) | ⏳ |
+| M19 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |
+| M20 | Репликация: инкрементальная синхронизация (`WAIT`, partial resync) | ⏳ |
+
+Отложено до отдельного решения: кластер, Lua (`EVAL`), TLS/Unix-сокеты, `ACL`,
+Geo, HyperLogLog, битовые операции.
+
 ## Контроль качества
 - `go test -race ./...` — после каждого этапа
 - `go vet ./...` — статический анализ

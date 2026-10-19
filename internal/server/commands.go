@@ -12,116 +12,135 @@ import (
 )
 
 func (s *Server) registerCommands() {
-	s.register("PING", cmdPing)
-	s.register("ECHO", cmdEcho)
-	s.register("TYPE", cmdType)
-	s.register("SET", cmdSet)
-	s.register("GET", cmdGet)
-	s.register("DEL", cmdDel)
-	s.register("EXISTS", cmdExists)
-	s.register("APPEND", cmdAppend)
-	s.register("STRLEN", cmdStrlen)
-	s.register("INCR", cmdIncr)
-	s.register("DECR", cmdDecr)
-	s.register("INCRBY", cmdIncrBy)
-	s.register("DECRBY", cmdDecrBy)
-	s.register("EXPIRE", cmdExpire)
-	s.register("PEXPIRE", cmdPExpire)
-	s.register("EXPIREAT", cmdExpireAt)
-	s.register("PEXPIREAT", cmdPExpireAt)
-	s.register("TTL", cmdTTL)
-	s.register("PTTL", cmdPTTL)
-	s.register("PERSIST", cmdPersist)
-	s.register("DBSIZE", cmdDBSize)
-	s.register("FLUSHDB", cmdFlushDB)
-	s.register("SAVE", cmdSave)
-	s.register("BGSAVE", cmdBGSAVE)
-	s.register("BGREWRITEAOF", cmdBGREWRITEAOF)
-	s.register("INFO", cmdInfo)
-	s.register("QUIT", cmdQuit)
+	// Read-only commands.
+	s.reg("PING", -1, cmdPing)
+	s.reg("ECHO", 2, cmdEcho)
+	s.reg("TYPE", 2, cmdType)
+	s.reg("GET", 2, cmdGet)
+	s.reg("EXISTS", -2, cmdExists)
+	s.reg("STRLEN", 2, cmdStrlen)
+	s.reg("TTL", 2, cmdTTL)
+	s.reg("PTTL", 2, cmdPTTL)
+	s.reg("DBSIZE", 1, cmdDBSize)
+	s.reg("INFO", -1, cmdInfo)
+	s.reg("QUIT", -1, cmdQuit)
+	s.reg("KEYS", 2, cmdKeys)
+	s.reg("SCAN", -2, cmdScan)
+	s.reg("CONFIG", -2, cmdConfig)
+	s.reg("CLIENT", -1, cmdClient)
+	s.reg("SLOWLOG", -2, cmdSlowlog)
+	s.reg("LRANGE", 4, cmdLRange)
+	s.reg("LLEN", 2, cmdLLen)
+	s.reg("LINDEX", 3, cmdLIndex)
+	s.reg("HGET", 3, cmdHGet)
+	s.reg("HGETALL", 2, cmdHGetAll)
+	s.reg("HLEN", 2, cmdHLen)
+	s.reg("HEXISTS", 3, cmdHExists)
+	s.reg("HKEYS", 2, cmdHKeys)
+	s.reg("HVALS", 2, cmdHVals)
+	s.reg("SMEMBERS", 2, cmdSMembers)
+	s.reg("SISMEMBER", 3, cmdSIsMember)
+	s.reg("SCARD", 2, cmdSCard)
+	s.reg("ZRANGE", -4, cmdZRange)
+	s.reg("ZREVRANGE", -4, cmdZRevRange)
+	s.reg("ZSCORE", 3, cmdZScore)
+	s.reg("ZCARD", 2, cmdZCard)
+	s.reg("ZRANK", -3, cmdZRank)
+	s.reg("ZREVRANK", -3, cmdZRevRank)
 
-	s.register("SUBSCRIBE", cmdSubscribe)
-	s.register("UNSUBSCRIBE", cmdUnsubscribe)
-	s.register("PSUBSCRIBE", cmdPSubscribe)
-	s.register("PUNSUBSCRIBE", cmdPUnsubscribe)
-	s.register("PUBLISH", cmdPublish)
+	// Pub/Sub commands.
+	s.reg("SUBSCRIBE", -2, cmdSubscribe)
+	s.reg("UNSUBSCRIBE", -1, cmdUnsubscribe)
+	s.reg("PSUBSCRIBE", -2, cmdPSubscribe)
+	s.reg("PUNSUBSCRIBE", -1, cmdPUnsubscribe)
+	s.reg("PUBLISH", 3, cmdPublish)
 
-	s.register("MULTI", cmdMulti)
-	s.register("EXEC", cmdExec)
-	s.register("DISCARD", cmdDiscard)
-	s.register("WATCH", cmdWatch)
-	s.register("UNWATCH", cmdUnwatch)
+	// Transaction commands.
+	s.reg("MULTI", 1, cmdMulti)
+	s.reg("EXEC", 1, cmdExec)
+	s.reg("DISCARD", 1, cmdDiscard)
+	s.reg("WATCH", -2, cmdWatch)
+	s.reg("UNWATCH", 1, cmdUnwatch)
 
-	s.register("KEYS", cmdKeys)
-	s.register("SCAN", cmdScan)
-	s.register("CONFIG", cmdConfig)
-	s.register("CLIENT", cmdClient)
-	s.register("SLOWLOG", cmdSlowlog)
+	// Write commands: they mutate the dataset and are propagated to the AOF.
+	s.regW("DEL", -2, cmdDel)
+	s.regW("FLUSHDB", -1, cmdFlushDB)
+	s.regW("HDEL", -3, cmdHDel)
+	s.regW("LPOP", -2, cmdLPop)
+	s.regW("RPOP", -2, cmdRPop)
+	s.regW("PERSIST", 2, cmdPersist)
+	s.regW("SREM", -3, cmdSRem)
+	s.regW("ZREM", -3, cmdZRem)
+	s.regW("EXPIREAT", 3, cmdExpireAt)
+	s.regW("PEXPIREAT", 3, cmdPExpireAt)
 
-	s.register("LPUSH", cmdLPush)
-	s.register("RPUSH", cmdRPush)
-	s.register("LPOP", cmdLPop)
-	s.register("RPOP", cmdRPop)
-	s.register("LRANGE", cmdLRange)
-	s.register("LLEN", cmdLLen)
-	s.register("LINDEX", cmdLIndex)
-	s.register("LSET", cmdLSet)
+	// Write commands that can grow the dataset: under noeviction they are
+	// denied once the store is over maxmemory.
+	s.regWG("APPEND", 3, cmdAppend)
+	s.regWG("DECR", 2, cmdDecr)
+	s.regWG("DECRBY", 3, cmdDecrBy)
+	s.regWG("HSET", -4, cmdHSet)
+	s.regWG("INCR", 2, cmdIncr)
+	s.regWG("INCRBY", 3, cmdIncrBy)
+	s.regWG("LPUSH", -3, cmdLPush)
+	s.regWG("LSET", 4, cmdLSet)
+	s.regWG("RPUSH", -3, cmdRPush)
+	s.regWG("SADD", -3, cmdSAdd)
+	s.regWG("ZADD", -4, cmdZAdd)
 
-	s.register("HSET", cmdHSet)
-	s.register("HGET", cmdHGet)
-	s.register("HGETALL", cmdHGetAll)
-	s.register("HDEL", cmdHDel)
-	s.register("HLEN", cmdHLen)
-	s.register("HEXISTS", cmdHExists)
-	s.register("HKEYS", cmdHKeys)
-	s.register("HVALS", cmdHVals)
+	// Write commands that propagate themselves to the AOF, because the
+	// rewrite (relative -> absolute TTL) depends on whether the command
+	// took effect.
+	s.regWS("EXPIRE", 3, cmdExpire)
+	s.regWS("PEXPIRE", 3, cmdPExpire)
+	s.regWSG("SET", -3, cmdSet)
 
-	s.register("SADD", cmdSAdd)
-	s.register("SREM", cmdSRem)
-	s.register("SMEMBERS", cmdSMembers)
-	s.register("SISMEMBER", cmdSIsMember)
-	s.register("SCARD", cmdSCard)
-
-	s.register("ZADD", cmdZAdd)
-	s.register("ZRANGE", cmdZRange)
-	s.register("ZREVRANGE", cmdZRevRange)
-	s.register("ZSCORE", cmdZScore)
-	s.register("ZREM", cmdZRem)
-	s.register("ZCARD", cmdZCard)
-	s.register("ZRANK", cmdZRank)
-	s.register("ZREVRANK", cmdZRevRank)
+	// Persistence commands: they touch the dataset only indirectly (they
+	// write files), so they are not propagated to the AOF.
+	s.reg("SAVE", 1, cmdSave)
+	s.reg("BGSAVE", -1, cmdBGSAVE)
+	s.reg("BGREWRITEAOF", 1, cmdBGREWRITEAOF)
 }
 
-// arity maps command names to their Redis arity: a positive n means exactly
-// n arguments (including the command name), a negative n means at least |n|.
-// It backs queue-time validation of commands inside MULTI, like Redis does.
-var arity = map[string]int{
-	// general
-	"ping": -1, "echo": 2, "type": 2, "dbsize": 1, "flushdb": -1,
-	"save": 1, "bgsave": -1, "bgrewriteaof": 1, "info": -1, "quit": -1,
-	// string
-	"set": -3, "get": 2, "del": -2, "exists": -2, "append": 3, "strlen": 2,
-	"incr": 2, "decr": 2, "incrby": 3, "decrby": 3,
-	// keyspace
-	"expire": 3, "pexpire": 3, "expireat": 3, "pexpireat": 3,
-	"ttl": 2, "pttl": 2, "persist": 2,
-	// pub/sub
-	"subscribe": -2, "unsubscribe": -1, "psubscribe": -2, "punsubscribe": -1, "publish": 3,
-	// transactions
-	"multi": 1, "exec": 1, "discard": 1, "watch": -2, "unwatch": 1,
-	// server admin
-	"keys": 2, "scan": -2, "config": -2, "client": -1, "slowlog": -2,
-	// list
-	"lpush": -3, "rpush": -3, "lpop": -2, "rpop": -2, "lrange": 4, "llen": 2,
-	"lindex": 3, "lset": 4,
-	// hash
-	"hset": -4, "hget": 3, "hgetall": 2, "hdel": -3, "hlen": 2,
-	"hexists": 3, "hkeys": 2, "hvals": 2,
-	// set
-	"sadd": -3, "srem": -3, "smembers": 2, "sismember": 3, "scard": 2,
-	// zset
-	"zadd": -4, "zrange": -4, "zrevrange": -4, "zscore": 3, "zrem": -3,
-	"zcard": 2, "zrank": -3, "zrevrank": -3,
+// cmdSpec describes a single command: its handler and its metadata.
+//
+// Arity follows Redis: a positive n means exactly n arguments (including the
+// command name itself), a negative n means at least |n| arguments. It backs
+// the queue-time validation of commands inside MULTI, like Redis does.
+type cmdSpec struct {
+	handler Handler
+	arity   int
+	write   bool // mutates the dataset: the command is propagated to the AOF
+	aofSelf bool // the handler propagates the command to the AOF itself
+	memAdd  bool // can grow the dataset: denied under noeviction when over the limit
+}
+
+// reg registers a read-only command.
+func (s *Server) reg(name string, arity int, h Handler) {
+	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity}
+}
+
+// regW registers a command that mutates the dataset: it is propagated to the
+// AOF after execution.
+func (s *Server) regW(name string, arity int, h Handler) {
+	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true}
+}
+
+// regWG registers a command that mutates the dataset and can grow it.
+func (s *Server) regWG(name string, arity int, h Handler) {
+	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true, memAdd: true}
+}
+
+// regWS registers a command that mutates the dataset and propagates itself
+// to the AOF.
+func (s *Server) regWS(name string, arity int, h Handler) {
+	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true, aofSelf: true}
+}
+
+// regWSG registers a command that mutates the dataset, can grow it and
+// propagates itself to the AOF.
+func (s *Server) regWSG(name string, arity int, h Handler) {
+	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true, aofSelf: true, memAdd: true}
 }
 
 func wrongArgs(w *resp.Writer, cmd string) {

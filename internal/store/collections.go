@@ -62,45 +62,44 @@ func (s *Store) ListPop(key []byte, left bool) ([]byte, bool, error) {
 
 // ListLen returns the length of the list under key. ok is false when missing.
 func (s *Store) ListLen(key []byte) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return 0, false, nil
-	}
-	if e.Type != TypeList {
-		return 0, false, ErrWrongType
-	}
-	return e.List.Len(), true, nil
+	return readEntry(s, key, func(e *Entry) (int, error) {
+		if e.Type != TypeList {
+			return 0, ErrWrongType
+		}
+		return e.List.Len(), nil
+	})
 }
 
 // ListRange returns the elements in the inclusive index range [start, stop].
 func (s *Store) ListRange(key []byte, start, stop int) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, nil
-	}
-	if e.Type != TypeList {
-		return nil, ErrWrongType
-	}
-	return e.List.Range(start, stop), nil
+	v, _, err := readEntry(s, key, func(e *Entry) ([][]byte, error) {
+		if e.Type != TypeList {
+			return nil, ErrWrongType
+		}
+		return e.List.Range(start, stop), nil
+	})
+	return v, err
 }
 
 // ListIndex returns the element at index i. ok is false when out of range or
 // the key is missing.
 func (s *Store) ListIndex(key []byte, i int) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
+	v, ok, err := readEntry(s, key, func(e *Entry) ([]byte, error) {
+		if e.Type != TypeList {
+			return nil, ErrWrongType
+		}
+		v, found := e.List.Index(i)
+		if !found {
+			return nil, errNotFound
+		}
+		return v, nil
+	})
+	if err == errNotFound {
 		return nil, false, nil
 	}
-	if e.Type != TypeList {
-		return nil, false, ErrWrongType
+	if err != nil {
+		return nil, false, err
 	}
-	v, ok := e.List.Index(i)
 	return v, ok, nil
 }
 
@@ -153,36 +152,39 @@ func (s *Store) HashSet(key, field, value []byte) (int, error) {
 // HashGet returns the value of field in the hash under key. ok is false when
 // the field (or key) is missing.
 func (s *Store) HashGet(key, field []byte) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
+	v, ok, err := readEntry(s, key, func(e *Entry) ([]byte, error) {
+		if e.Type != TypeHash {
+			return nil, ErrWrongType
+		}
+		v, found := e.Hash[string(field)]
+		if !found {
+			return nil, errNotFound
+		}
+		return v, nil
+	})
+	if err == errNotFound {
 		return nil, false, nil
 	}
-	if e.Type != TypeHash {
-		return nil, false, ErrWrongType
+	if err != nil {
+		return nil, false, err
 	}
-	v, ok := e.Hash[string(field)]
 	return v, ok, nil
 }
 
 // HashGetAll returns all field/value pairs as a flat slice
 // (field, value, field, value, ...).
 func (s *Store) HashGetAll(key []byte) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, nil
-	}
-	if e.Type != TypeHash {
-		return nil, ErrWrongType
-	}
-	out := make([][]byte, 0, len(e.Hash)*2)
-	for f, v := range e.Hash {
-		out = append(out, []byte(f), v)
-	}
-	return out, nil
+	v, _, err := readEntry(s, key, func(e *Entry) ([][]byte, error) {
+		if e.Type != TypeHash {
+			return nil, ErrWrongType
+		}
+		out := make([][]byte, 0, len(e.Hash)*2)
+		for f, v := range e.Hash {
+			out = append(out, []byte(f), v)
+		}
+		return out, nil
+	})
+	return v, err
 }
 
 // HashDel removes fields from the hash under key, returning the number removed.
@@ -216,67 +218,60 @@ func (s *Store) HashDel(key []byte, fields ...[]byte) (int, error) {
 // HashLen returns the number of fields in the hash under key. ok is false when
 // missing.
 func (s *Store) HashLen(key []byte) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return 0, false, nil
-	}
-	if e.Type != TypeHash {
-		return 0, false, ErrWrongType
-	}
-	return len(e.Hash), true, nil
+	return readEntry(s, key, func(e *Entry) (int, error) {
+		if e.Type != TypeHash {
+			return 0, ErrWrongType
+		}
+		return len(e.Hash), nil
+	})
 }
 
 // HashExists reports whether field exists in the hash under key.
 func (s *Store) HashExists(key, field []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	exists, ok, err := readEntry(s, key, func(e *Entry) (bool, error) {
+		if e.Type != TypeHash {
+			return false, ErrWrongType
+		}
+		_, found := e.Hash[string(field)]
+		return found, nil
+	})
+	if err != nil {
+		return false, err
+	}
 	if !ok {
 		return false, nil
 	}
-	if e.Type != TypeHash {
-		return false, ErrWrongType
-	}
-	_, exists := e.Hash[string(field)]
 	return exists, nil
 }
 
 // HashKeys returns all field names in the hash under key.
 func (s *Store) HashKeys(key []byte) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, nil
-	}
-	if e.Type != TypeHash {
-		return nil, ErrWrongType
-	}
-	out := make([][]byte, 0, len(e.Hash))
-	for f := range e.Hash {
-		out = append(out, []byte(f))
-	}
-	return out, nil
+	v, _, err := readEntry(s, key, func(e *Entry) ([][]byte, error) {
+		if e.Type != TypeHash {
+			return nil, ErrWrongType
+		}
+		out := make([][]byte, 0, len(e.Hash))
+		for f := range e.Hash {
+			out = append(out, []byte(f))
+		}
+		return out, nil
+	})
+	return v, err
 }
 
 // HashVals returns all values in the hash under key.
 func (s *Store) HashVals(key []byte) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, nil
-	}
-	if e.Type != TypeHash {
-		return nil, ErrWrongType
-	}
-	out := make([][]byte, 0, len(e.Hash))
-	for _, v := range e.Hash {
-		out = append(out, v)
-	}
-	return out, nil
+	v, _, err := readEntry(s, key, func(e *Entry) ([][]byte, error) {
+		if e.Type != TypeHash {
+			return nil, ErrWrongType
+		}
+		out := make([][]byte, 0, len(e.Hash))
+		for _, v := range e.Hash {
+			out = append(out, v)
+		}
+		return out, nil
+	})
+	return v, err
 }
 
 // SetAdd adds members to the set under key, creating it if missing, and returns
@@ -335,48 +330,44 @@ func (s *Store) SetRem(key []byte, members ...[]byte) (int, error) {
 
 // SetMembers returns all members of the set under key.
 func (s *Store) SetMembers(key []byte) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return nil, nil
-	}
-	if e.Type != TypeSet {
-		return nil, ErrWrongType
-	}
-	out := make([][]byte, 0, len(e.Set))
-	for m := range e.Set {
-		out = append(out, []byte(m))
-	}
-	return out, nil
+	v, _, err := readEntry(s, key, func(e *Entry) ([][]byte, error) {
+		if e.Type != TypeSet {
+			return nil, ErrWrongType
+		}
+		out := make([][]byte, 0, len(e.Set))
+		for m := range e.Set {
+			out = append(out, []byte(m))
+		}
+		return out, nil
+	})
+	return v, err
 }
 
 // SetIsMember reports whether member is in the set under key.
 func (s *Store) SetIsMember(key, member []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	found, ok, err := readEntry(s, key, func(e *Entry) (bool, error) {
+		if e.Type != TypeSet {
+			return false, ErrWrongType
+		}
+		_, exists := e.Set[string(member)]
+		return exists, nil
+	})
+	if err != nil {
+		return false, err
+	}
 	if !ok {
 		return false, nil
 	}
-	if e.Type != TypeSet {
-		return false, ErrWrongType
-	}
-	_, exists := e.Set[string(member)]
-	return exists, nil
+	return found, nil
 }
 
 // SetCard returns the cardinality of the set under key. ok is false when
 // missing.
 func (s *Store) SetCard(key []byte) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
-	if !ok {
-		return 0, false, nil
-	}
-	if e.Type != TypeSet {
-		return 0, false, ErrWrongType
-	}
-	return len(e.Set), true, nil
+	return readEntry(s, key, func(e *Entry) (int, error) {
+		if e.Type != TypeSet {
+			return 0, ErrWrongType
+		}
+		return len(e.Set), nil
+	})
 }
