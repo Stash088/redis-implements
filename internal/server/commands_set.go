@@ -33,6 +33,18 @@ func cmdSMembers(ctx *Ctx) error {
 	if err != nil {
 		return writeWrongType(ctx.W)
 	}
+	// In RESP3 the members come as a set, in RESP2 as an array.
+	if ctx.proto3() {
+		if err := ctx.W.WriteSetHeader(len(members)); err != nil {
+			return err
+		}
+		for _, m := range members {
+			if err := ctx.W.WriteBulkString(m); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	return writeBulkArray(ctx.W, members)
 }
 

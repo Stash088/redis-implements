@@ -69,6 +69,25 @@ func zrangeCommon(ctx *Ctx, cmd string, reverse bool) error {
 		}
 		return writeBulkArray(ctx.W, members)
 	}
+	// In RESP3 the scores come as pairs with a double score, in RESP2 as a
+	// flat array of alternating members and score strings.
+	if ctx.proto3() {
+		if err := ctx.W.WriteArrayHeader(len(entries)); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := ctx.W.WriteArrayHeader(2); err != nil {
+				return err
+			}
+			if err := ctx.W.WriteBulkString(e.Member); err != nil {
+				return err
+			}
+			if err := ctx.W.WriteDouble(e.Score); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if err := ctx.W.WriteArrayHeader(len(entries) * 2); err != nil {
 		return err
 	}
@@ -94,6 +113,10 @@ func cmdZScore(ctx *Ctx) error {
 	}
 	if !ok {
 		return ctx.W.WriteNullBulk()
+	}
+	// In RESP3 the score is a double, in RESP2 a bulk string.
+	if ctx.proto3() {
+		return ctx.W.WriteDouble(score)
 	}
 	return ctx.W.WriteBulkString([]byte(formatScore(score)))
 }

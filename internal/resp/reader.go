@@ -171,9 +171,151 @@ func (r *Reader) ReadValue() (Value, error) {
 		return r.readBulk()
 	case KindArray:
 		return r.readArray(0)
+	case KindMap:
+		return r.readMap(0)
+	case KindSet:
+		return r.readSet(0)
+	case KindPush:
+		return r.readPush(0)
+	case KindDouble:
+		line, err := r.readLine()
+		if err != nil {
+			return Value{}, err
+		}
+		f, err := strconv.ParseFloat(string(line), 64)
+		if err != nil {
+			return Value{}, fmt.Errorf("%w: bad double %q", ErrInvalid, line)
+		}
+		return NewDouble(f), nil
+	case KindBigNumber:
+		line, err := r.readLine()
+		if err != nil {
+			return Value{}, err
+		}
+		return NewBigNumber(string(line)), nil
+	case KindVerbatim:
+		return r.readVerbatim()
 	default:
 		return Value{}, fmt.Errorf("%w: unknown type byte %q", ErrInvalid, typ)
 	}
+}
+
+// readMap reads a RESP3 map: a count of key/value pairs followed by the
+// elements, stored as alternating keys and values.
+func (r *Reader) readMap(depth int) (Value, error) {
+	if depth > 1024 {
+		return Value{}, fmt.Errorf("%w: map nesting too deep", ErrInvalid)
+	}
+	line, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	n, err := strconv.Atoi(string(line))
+	if err != nil {
+		return Value{}, fmt.Errorf("%w: bad map length %q", ErrInvalid, line)
+	}
+	if n < 0 {
+		return NewMap(nil), nil
+	}
+	if n > r.maxArrayLen {
+		return Value{}, fmt.Errorf("%w: map length %d exceeds limit %d", ErrTooBig, n, r.maxArrayLen)
+	}
+	elems := make([]Value, 0, 2*n)
+	for i := 0; i < 2*n; i++ {
+		v, err := r.ReadValue()
+		if err != nil {
+			return Value{}, err
+		}
+		elems = append(elems, v)
+	}
+	return NewMap(elems), nil
+}
+
+// readSet reads a RESP3 set.
+func (r *Reader) readSet(depth int) (Value, error) {
+	if depth > 1024 {
+		return Value{}, fmt.Errorf("%w: set nesting too deep", ErrInvalid)
+	}
+	line, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	n, err := strconv.Atoi(string(line))
+	if err != nil {
+		return Value{}, fmt.Errorf("%w: bad set length %q", ErrInvalid, line)
+	}
+	if n < 0 {
+		return NewSet(nil), nil
+	}
+	if n > r.maxArrayLen {
+		return Value{}, fmt.Errorf("%w: set length %d exceeds limit %d", ErrTooBig, n, r.maxArrayLen)
+	}
+	elems := make([]Value, 0, n)
+	for i := 0; i < n; i++ {
+		v, err := r.ReadValue()
+		if err != nil {
+			return Value{}, err
+		}
+		elems = append(elems, v)
+	}
+	return NewSet(elems), nil
+}
+
+// readPush reads a RESP3 push message.
+func (r *Reader) readPush(depth int) (Value, error) {
+	if depth > 1024 {
+		return Value{}, fmt.Errorf("%w: push nesting too deep", ErrInvalid)
+	}
+	line, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	n, err := strconv.Atoi(string(line))
+	if err != nil {
+		return Value{}, fmt.Errorf("%w: bad push length %q", ErrInvalid, line)
+	}
+	if n < 0 {
+		return NewPush(nil), nil
+	}
+	if n > r.maxArrayLen {
+		return Value{}, fmt.Errorf("%w: push length %d exceeds limit %d", ErrTooBig, n, r.maxArrayLen)
+	}
+	elems := make([]Value, 0, n)
+	for i := 0; i < n; i++ {
+		v, err := r.ReadValue()
+		if err != nil {
+			return Value{}, err
+		}
+		elems = append(elems, v)
+	}
+	return NewPush(elems), nil
+}
+
+// readVerbatim reads a RESP3 verbatim string: a length-prefixed payload that
+// starts with a three-character format ("txt:", "mkd:" or "json:").
+func (r *Reader) readVerbatim() (Value, error) {
+	line, err := r.readLine()
+	if err != nil {
+		return Value{}, err
+	}
+	n, err := strconv.Atoi(string(line))
+	if err != nil {
+		return Value{}, fmt.Errorf("%w: bad verbatim length %q", ErrInvalid, line)
+	}
+	if n < 0 {
+		return NewVerbatim(""), nil
+	}
+	if n > r.maxBulkLen {
+		return Value{}, fmt.Errorf("%w: verbatim length %d exceeds limit %d", ErrTooBig, n, r.maxBulkLen)
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r.br, buf); err != nil {
+		return Value{}, err
+	}
+	if err := r.consumeCRLF(); err != nil {
+		return Value{}, err
+	}
+	return NewVerbatim(string(buf)), nil
 }
 
 func (r *Reader) readBulk() (Value, error) {

@@ -5,6 +5,7 @@
 ## Возможности
 
 - **Протокол RESP** — полный парсер и сериализатор: simple strings, errors, integers, bulk strings, arrays, null-значения. Буферизованное чтение, лимиты на размер сообщений, защита от malformed-ввода.
+- **RESP3** — `HELLO 3` переключает соединение на RESP3: карты, множества, double, big number, verbatim string, push-кадры. Проверено живым клиентом redis-py.
 - **Типизированное хранилище** — `string`, `list`, `hash`, `set`, `zset` с проверкой типов и ошибкой `-WRONGTYPE`.
 - **Структуры данных**:
   - `list` — собственный двусвязный список (O(1) push/pop с обоих концов);
@@ -116,6 +117,7 @@ RESP `PING` через busybox `nc`.
 | Категория | Команды |
 |---|---|
 | Общие | `PING`, `ECHO`, `QUIT`, `DEL`, `EXISTS`, `TYPE`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`, `INFO` |
+| Протокол | `HELLO` |
 | Базы данных | `SELECT` |
 | Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `KEYS`, `SCAN` (MATCH/COUNT) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |

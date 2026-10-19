@@ -20,8 +20,9 @@ func (c *client) push() resp.Value {
 
 func expectConfirm(t *testing.T, v resp.Value, kind, channel string, count int64) {
 	t.Helper()
-	if v.Kind != resp.KindArray || len(v.Array) != 3 {
-		t.Fatalf("confirm: got %+v, want 3-element array", v)
+	// In RESP3 the confirmation is a push frame, in RESP2 a plain array.
+	if (v.Kind != resp.KindArray && v.Kind != resp.KindPush) || len(v.Array) != 3 {
+		t.Fatalf("confirm: got %+v, want a 3-element array or push", v)
 	}
 	if string(v.Array[0].Str) != kind {
 		t.Errorf("confirm kind: got %q, want %q", v.Array[0].Str, kind)

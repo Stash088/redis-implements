@@ -21,9 +21,13 @@ func (c *client) subCount() int {
 }
 
 // writeSubConfirm writes ["kind", channel, count] like Redis subscription
-// confirmations.
-func writeSubConfirm(w *resp.Writer, kind string, channel []byte, n int) error {
-	if err := w.WriteArrayHeader(3); err != nil {
+// confirmations. In RESP3 the confirmation is a push message.
+func writeSubConfirm(w *resp.Writer, proto int, kind string, channel []byte, n int) error {
+	if proto >= 3 {
+		if err := w.WritePushHeader(3); err != nil {
+			return err
+		}
+	} else if err := w.WriteArrayHeader(3); err != nil {
 		return err
 	}
 	if err := w.WriteBulkString([]byte(kind)); err != nil {
@@ -44,7 +48,7 @@ func cmdSubscribe(ctx *Ctx) error {
 	c.startPump(ctx.W)
 	for _, ch := range ctx.Args[1:] {
 		ctx.Srv.PubSub.subscribe(c, string(ch))
-		if err := writeSubConfirm(ctx.W, "subscribe", ch, c.subCount()); err != nil {
+		if err := writeSubConfirm(ctx.W, c.Proto(), "subscribe", ch, c.subCount()); err != nil {
 			return err
 		}
 	}
@@ -60,7 +64,11 @@ func cmdUnsubscribe(ctx *Ctx) error {
 		}
 	}
 	if len(channels) == 0 {
-		if err := ctx.W.WriteArrayHeader(3); err != nil {
+		if c.Proto() >= 3 {
+			if err := ctx.W.WritePushHeader(3); err != nil {
+				return err
+			}
+		} else if err := ctx.W.WriteArrayHeader(3); err != nil {
 			return err
 		}
 		if err := ctx.W.WriteBulkString([]byte("unsubscribe")); err != nil {
@@ -73,7 +81,7 @@ func cmdUnsubscribe(ctx *Ctx) error {
 	}
 	for _, ch := range channels {
 		ctx.Srv.PubSub.unsubscribe(c, string(ch))
-		if err := writeSubConfirm(ctx.W, "unsubscribe", ch, c.subCount()); err != nil {
+		if err := writeSubConfirm(ctx.W, c.Proto(), "unsubscribe", ch, c.subCount()); err != nil {
 			return err
 		}
 	}
@@ -89,7 +97,7 @@ func cmdPSubscribe(ctx *Ctx) error {
 	c.startPump(ctx.W)
 	for _, p := range ctx.Args[1:] {
 		ctx.Srv.PubSub.subscribePattern(c, string(p))
-		if err := writeSubConfirm(ctx.W, "psubscribe", p, c.subCount()); err != nil {
+		if err := writeSubConfirm(ctx.W, c.Proto(), "psubscribe", p, c.subCount()); err != nil {
 			return err
 		}
 	}
@@ -105,7 +113,11 @@ func cmdPUnsubscribe(ctx *Ctx) error {
 		}
 	}
 	if len(patterns) == 0 {
-		if err := ctx.W.WriteArrayHeader(3); err != nil {
+		if c.Proto() >= 3 {
+			if err := ctx.W.WritePushHeader(3); err != nil {
+				return err
+			}
+		} else if err := ctx.W.WriteArrayHeader(3); err != nil {
 			return err
 		}
 		if err := ctx.W.WriteBulkString([]byte("punsubscribe")); err != nil {
@@ -118,7 +130,7 @@ func cmdPUnsubscribe(ctx *Ctx) error {
 	}
 	for _, p := range patterns {
 		ctx.Srv.PubSub.unsubscribePattern(c, string(p))
-		if err := writeSubConfirm(ctx.W, "punsubscribe", p, c.subCount()); err != nil {
+		if err := writeSubConfirm(ctx.W, c.Proto(), "punsubscribe", p, c.subCount()); err != nil {
 			return err
 		}
 	}

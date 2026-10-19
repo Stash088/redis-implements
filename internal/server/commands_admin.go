@@ -173,7 +173,12 @@ func configGet(ctx *Ctx, pattern string) error {
 		}
 	}
 	w := ctx.W
-	if err := w.WriteArrayHeader(len(out) * 2); err != nil {
+	// In RESP3 the parameters come as a map, in RESP2 as a flat array.
+	if ctx.proto3() {
+		if err := w.WriteMapHeader(len(out)); err != nil {
+			return err
+		}
+	} else if err := w.WriteArrayHeader(len(out) * 2); err != nil {
 		return err
 	}
 	for _, p := range out {

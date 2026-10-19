@@ -101,6 +101,9 @@ func (s *Server) registerCommands() {
 	s.reg("BGSAVE", -1, cmdBGSAVE)
 	s.reg("BGREWRITEAOF", 1, cmdBGREWRITEAOF)
 
+	// Protocol negotiation.
+	s.reg("HELLO", -1, cmdHello)
+
 	// Database commands. SELECT only changes the connection's database, so it
 	// propagates itself to the AOF and does not dirty the dataset.
 	s.reg("SELECT", 2, cmdSelect)

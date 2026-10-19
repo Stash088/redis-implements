@@ -86,11 +86,20 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       пропорционально их размеру.
 - [x] БД, которых нет в дампе, пропускаются при загрузке (как в Redis).
 
-### ⏳ M4 — `HELLO` + RESP3
+### ✅ M4 — `HELLO` + RESP3
 
-- [ ] `internal/resp`: типы map (`%`), set (`~`), double (`,`), big number (`(`),
-      verbatim (`=`), push (`>`); big number → int128 через `math/big`.
-- [ ] Версия протокола на клиента; в RESP3 push-сообщения Pub/Sub.
+- [x] `internal/resp`: типы map (`%`), set (`~`), double (`,`), big number (`(`),
+      verbatim (`=`), push (`>`) — чтение и запись, с тестами round-trip.
+- [x] `HELLO [2|3]` переключает протокол соединения; в RESP3 ответ — карта, в
+      RESP2 — плоский массив; неподдерживаемая версия → `NOPROTO`.
+- [x] Различия ответов RESP3, как в Redis: `HGETALL` → карта, `CONFIG GET` →
+      карта, `SMEMBERS` → множество, `ZSCORE` → double, `ZRANGE WITHSCORES` →
+      массив пар `[member, double]`, Pub/Sub → push-кадры.
+- [x] Проверено живым клиентом **redis-py 8.1** (`protocol=3`): ping/set/get,
+      zrange withscores, hgetall, smembers, config_get, pipeline, info, scan —
+      всё работает.
+- [x] Попутно исправлен `HSET` с несколькими парами поле-значение (как в
+      Redis 4+), который раньше отвечал ошибкой.
 
 ### ⏳ M5 — `AUTH` / `--requirepass`
 

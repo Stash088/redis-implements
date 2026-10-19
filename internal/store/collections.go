@@ -126,6 +126,13 @@ func (s *Store) ListSet(key []byte, i int, v []byte) (bool, error) {
 // HashSet sets field to value in the hash under key, creating it if missing.
 // It returns 1 when the field is new and 0 when it already existed.
 func (s *Store) HashSet(key, field, value []byte) (int, error) {
+	return s.HashSetMany(key, [][]byte{field}, [][]byte{value})
+}
+
+// HashSetMany sets several fields of the hash under key at once, creating the
+// hash if missing. It returns the number of fields that were new. The fields
+// and values slices must have the same length.
+func (s *Store) HashSetMany(key []byte, fields, values [][]byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.entryLocked(key)
@@ -138,15 +145,19 @@ func (s *Store) HashSet(key, field, value []byte) (int, error) {
 	}
 	s.touchLocked(string(key))
 	s.markAccess(e)
-	f := string(field)
-	if old, exists := e.Hash[f]; exists {
-		e.Hash[f] = value
-		s.addCost(e, len(value)-len(old))
-		return 0, nil
+	added := 0
+	for i := range fields {
+		f := string(fields[i])
+		if old, exists := e.Hash[f]; exists {
+			e.Hash[f] = values[i]
+			s.addCost(e, len(values[i])-len(old))
+			continue
+		}
+		e.Hash[f] = values[i]
+		s.addCost(e, len(f)+len(values[i]))
+		added++
 	}
-	e.Hash[f] = value
-	s.addCost(e, len(f)+len(value))
-	return 1, nil
+	return added, nil
 }
 
 // HashGet returns the value of field in the hash under key. ok is false when

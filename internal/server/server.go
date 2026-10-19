@@ -27,6 +27,11 @@ type Ctx struct {
 	Client *client
 }
 
+// proto3 reports whether the client speaks RESP3.
+func (c *Ctx) proto3() bool {
+	return c.Client != nil && c.Client.Proto() >= 3
+}
+
 // Handler implements a single Redis command.
 type Handler func(*Ctx) error
 
