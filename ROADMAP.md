@@ -197,7 +197,7 @@ redis-implements/
 | M6 | Админ-команды v2: `COMMAND`, `RESET`, `CLIENT INFO/KILL/REPLY`, `PUBSUB CHANNELS`, `UNLINK`, `TOUCH`, `RANDOMKEY`, `TIME`, `DEBUG` | ✅ |
 | M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
 | M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |
-| M9 | Строки v2: `MSET`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `GETRANGE`, `SETRANGE` | ⏳ |
+| M9 | Строки v2: `MSET`/`MSETNX`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`/`PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE`, `INCRBYFLOAT` | ✅ |
 | M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ⏳ |
 | M11 | Hash v2: `HINCRBY`, `HSTRLEN`, `HRANDFIELD`, `HMGET` | ⏳ |
 | M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
