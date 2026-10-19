@@ -6,6 +6,7 @@
 # Test / coverage
 *.out
 coverage.*
+*.test
 
 # Profiling (pprof)
 *.prof

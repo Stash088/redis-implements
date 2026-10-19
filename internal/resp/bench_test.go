@@ -103,3 +103,47 @@ func BenchmarkWriterFlush(b *testing.B) {
 		w.Flush()
 	}
 }
+
+// resetReader is a rewindable byte source, so a benchmark can reuse one
+// Reader (and its buffer) for many iterations.
+type resetReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *resetReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *resetReader) reset() { r.pos = 0 }
+
+// BenchmarkReaderReuse measures the parser alone: the Reader and its buffer
+// are allocated once, so the reported allocations are the parser's own.
+func BenchmarkReaderReuse(b *testing.B) {
+	payload := bytes.NewBuffer(nil)
+	w := resp.NewWriter(payload)
+	elems := []resp.Value{
+		resp.NewBulkString([]byte("SET")),
+		resp.NewBulkString([]byte("foo")),
+		resp.NewBulkString([]byte("bar")),
+	}
+	w.WriteValue(resp.NewArray(elems))
+	w.Flush()
+	raw := payload.Bytes()
+
+	src := &resetReader{data: raw}
+	r := resp.NewReader(src)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		src.reset()
+		if _, err := r.ReadValue(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -242,3 +242,57 @@ func TestReaderMissingCRLF(t *testing.T) {
 		t.Errorf("expected error for missing CR")
 	}
 }
+
+func TestValueLen(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"+OK\r\n", 5},
+		{"-ERR bad\r\n", 10},
+		{":42\r\n", 5},
+		{"$3\r\nabc\r\n", 9},
+		{"$0\r\n\r\n", 6},
+		{"$-1\r\n", 5},
+		{"*2\r\n$1\r\na\r\n$1\r\nb\r\n", 18},
+		{"*-1\r\n", 5},
+		{"*0\r\n", 4},
+		// Fragments: the value is not complete yet.
+		{"", 0},
+		{"+OK", 0},
+		{"+OK\r", 0},
+		{"$3\r\nab", 0},
+		{"$3\r\nabc", 0},
+		{"*2\r\n$1\r\na\r\n", 0},
+		{"*1\r\n", 0},
+		{"?bad\r\n", 0},
+	}
+	for _, c := range cases {
+		if got := valueLen([]byte(c.in)); got != c.want {
+			t.Errorf("valueLen(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestHasBufferedValue(t *testing.T) {
+	// A complete command in the buffer is detected...
+	r := NewReader(strings.NewReader("*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n"))
+	if r.HasBufferedValue() {
+		t.Error("empty buffer: want no buffered value")
+	}
+	if _, err := r.ReadValue(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.HasBufferedValue() {
+		t.Error("second pipelined command is buffered: want a buffered value")
+	}
+
+	// ...and a fragment of one is not.
+	r2 := NewReader(strings.NewReader("*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI"))
+	if _, err := r2.ReadValue(); err != nil {
+		t.Fatal(err)
+	}
+	if r2.HasBufferedValue() {
+		t.Error("fragmentary command: want no buffered value")
+	}
+}

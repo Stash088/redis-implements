@@ -50,6 +50,94 @@ func (r *Reader) SetMaxLineLen(n int) { r.maxLineLen = n }
 // SetMaxArrayLen overrides the maximum number of elements in an array.
 func (r *Reader) SetMaxArrayLen(n int) { r.maxArrayLen = n }
 
+// Buffered returns the number of bytes that are buffered but not yet read.
+func (r *Reader) Buffered() int { return r.br.Buffered() }
+
+// HasBufferedValue reports whether the reader's buffer already holds a
+// complete RESP value. The server uses it to batch the replies of pipelined
+// commands into a single write: while more commands are already buffered
+// there is no reason to flush the answers yet, and the client is not
+// waiting for them either.
+func (r *Reader) HasBufferedValue() bool {
+	n := r.br.Buffered()
+	if n == 0 {
+		return false
+	}
+	// Peek never blocks here: n does not exceed the buffered bytes.
+	b, err := r.br.Peek(n)
+	if err != nil {
+		return false
+	}
+	return valueLen(b) > 0
+}
+
+// valueLen returns the length of the first complete RESP value in b, or 0 when
+// b holds only a fragment of one.
+func valueLen(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	switch b[0] {
+	case '+', '-', ':':
+		i := indexCRLF(b)
+		if i < 0 {
+			return 0
+		}
+		return i + 2
+	case '$':
+		i := indexCRLF(b)
+		if i < 0 {
+			return 0
+		}
+		n, err := strconv.Atoi(string(b[1:i]))
+		if err != nil {
+			return 0
+		}
+		if n < 0 {
+			return i + 2 // null bulk string
+		}
+		total := i + 2 + n + 2
+		if len(b) < total {
+			return 0
+		}
+		return total
+	case '*':
+		i := indexCRLF(b)
+		if i < 0 {
+			return 0
+		}
+		n, err := strconv.Atoi(string(b[1:i]))
+		if err != nil {
+			return 0
+		}
+		if n < 0 {
+			return i + 2 // null array
+		}
+		pos := i + 2
+		for k := 0; k < n; k++ {
+			m := valueLen(b[pos:])
+			if m == 0 {
+				return 0
+			}
+			pos += m
+		}
+		return pos
+	default:
+		return 0
+	}
+}
+
+// indexCRLF returns the index of the CR of the first CRLF in b, or -1 when b
+// holds no complete line.
+func indexCRLF(b []byte) int {
+	for i := 0; i+1 < len(b); i++ {
+		if b[i] == '\r' && b[i+1] == '\n' {
+			return i
+		}
+	}
+	return -1
+}
+
 // ReadValue reads a single RESP value from the stream.
 func (r *Reader) ReadValue() (Value, error) {
 	typ, err := r.br.ReadByte()
@@ -149,22 +237,41 @@ func (r *Reader) readArray(depth int) (Value, error) {
 }
 
 // readLine reads up to and including CRLF, returning the line without the CRLF.
+//
+// The returned slice points into the reader's internal buffer and stays valid
+// only until the next read, so every caller must copy the bytes it keeps.
+// (All of them do: they convert the line to a string right away.)
 func (r *Reader) readLine() ([]byte, error) {
-	var line []byte
+	chunk, err := r.br.ReadSlice('\n')
+	if err == nil {
+		// The whole line fits in the buffer: return it without copying.
+		if len(chunk) < 2 || chunk[len(chunk)-2] != '\r' {
+			return nil, fmt.Errorf("%w: line not terminated by CRLF", ErrInvalid)
+		}
+		if len(chunk) > r.maxLineLen {
+			return nil, ErrTooBig
+		}
+		return chunk[:len(chunk)-2], nil
+	}
+	if err != bufio.ErrBufferFull {
+		return nil, err
+	}
+	// The line is longer than the buffer: accumulate the fragments.
+	line := make([]byte, 0, len(chunk))
+	line = append(line, chunk...)
 	for {
-		chunk, err := r.br.ReadSlice('\n')
+		if len(line) > r.maxLineLen {
+			return nil, ErrTooBig
+		}
+		chunk, err = r.br.ReadSlice('\n')
 		if err == nil {
 			line = append(line, chunk...)
 			break
 		}
-		if err == bufio.ErrBufferFull {
-			line = append(line, chunk...)
-			if len(line) > r.maxLineLen {
-				return nil, ErrTooBig
-			}
-			continue
+		if err != bufio.ErrBufferFull {
+			return nil, err
 		}
-		return nil, err
+		line = append(line, chunk...)
 	}
 	if len(line) < 2 || line[len(line)-2] != '\r' {
 		return nil, fmt.Errorf("%w: line not terminated by CRLF", ErrInvalid)

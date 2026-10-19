@@ -235,6 +235,20 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 	w := resp.NewWriter(conn)
 
 	for {
+		// Send the answers we owe the client before blocking on the socket.
+		// When more pipelined commands are already buffered the replies stay
+		// in the write buffer and leave in a single write, so a pipeline of
+		// N commands costs one syscall instead of N.
+		c.writeMu.Lock()
+		if !r.HasBufferedValue() {
+			if err := w.Flush(); err != nil {
+				c.writeMu.Unlock()
+				s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+				return
+			}
+		}
+		c.writeMu.Unlock()
+
 		v, err := r.ReadValue()
 		if err != nil {
 			if err != io.EOF {
@@ -243,23 +257,29 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			return
 		}
 		if v.Kind != resp.KindArray || v.IsNull {
+			c.writeMu.Lock()
 			w.WriteError("ERR Protocol error: expected command array")
 			w.Flush()
+			c.writeMu.Unlock()
 			return
 		}
 		args := make([][]byte, 0, len(v.Array))
 		for i := range v.Array {
 			el := v.Array[i]
 			if el.Kind != resp.KindBulkString || el.IsNull {
+				c.writeMu.Lock()
 				w.WriteError("ERR Protocol error: command arguments must be bulk strings")
 				w.Flush()
+				c.writeMu.Unlock()
 				return
 			}
 			args = append(args, el.Str)
 		}
 		if len(args) == 0 {
+			c.writeMu.Lock()
 			w.WriteError("ERR empty command")
 			w.Flush()
+			c.writeMu.Unlock()
 			continue
 		}
 
@@ -288,11 +308,6 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		if err == errQuit {
 			w.Flush()
 			c.writeMu.Unlock()
-			return
-		}
-		if err := w.Flush(); err != nil {
-			c.writeMu.Unlock()
-			s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
 		c.writeMu.Unlock()
