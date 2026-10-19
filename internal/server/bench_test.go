@@ -18,7 +18,7 @@ import (
 func benchServer(b *testing.B, cleanup func()) string {
 	b.Helper()
 	st := store.New()
-	srv, err := server.New("127.0.0.1:0", st)
+	srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 	if err != nil {
 		b.Fatalf("server.New: %v", err)
 	}

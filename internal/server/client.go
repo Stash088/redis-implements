@@ -36,6 +36,9 @@ type client struct {
 	done     chan struct{} // closed when the connection is gone; stops the pump
 	pumpOnce sync.Once
 
+	// Database selected with SELECT.
+	db int
+
 	// Transaction state.
 	inMulti  bool
 	queue    [][][]byte

@@ -14,11 +14,11 @@ import (
 func roundTrip(t *testing.T, st *store.Store) *store.Store {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := WriteRDB(&buf, st); err != nil {
+	if err := WriteRDB(&buf, []*store.Store{st}); err != nil {
 		t.Fatalf("WriteRDB: %v", err)
 	}
 	got := store.New()
-	if err := LoadBytes(buf.Bytes(), got); err != nil {
+	if err := LoadBytes(buf.Bytes(), []*store.Store{got}); err != nil {
 		t.Fatalf("LoadBytes: %v", err)
 	}
 	return got
@@ -93,7 +93,7 @@ func TestRDBAtomicSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dump.rdb")
 	src := buildStore(t)
-	if err := Save(path, src); err != nil {
+	if err := Save(path, []*store.Store{src}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
@@ -105,7 +105,7 @@ func TestRDBAtomicSaveLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if err := Load(f, got); err != nil {
+	if err := Load(f, []*store.Store{got}); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if v, ok, _ := got.GetString([]byte("str")); !ok || string(v) != "hello" {
@@ -115,7 +115,7 @@ func TestRDBAtomicSaveLoad(t *testing.T) {
 
 func TestRDBBadHeader(t *testing.T) {
 	st := store.New()
-	if err := LoadBytes([]byte("NOPE..."), st); err == nil {
+	if err := LoadBytes([]byte("NOPE..."), []*store.Store{st}); err == nil {
 		t.Fatal("expected error for bad header")
 	}
 }
@@ -123,13 +123,13 @@ func TestRDBBadHeader(t *testing.T) {
 func TestRDBTruncated(t *testing.T) {
 	var buf bytes.Buffer
 	st := buildStore(t)
-	if err := WriteRDB(&buf, st); err != nil {
+	if err := WriteRDB(&buf, []*store.Store{st}); err != nil {
 		t.Fatal(err)
 	}
 	data := buf.Bytes()
 	for _, cut := range []int{1, len(data) / 2, len(data) - 8, len(data) - 1} {
 		got := store.New()
-		if err := LoadBytes(data[:cut], got); err == nil {
+		if err := LoadBytes(data[:cut], []*store.Store{got}); err == nil {
 			t.Errorf("expected error for truncated dump (cut at %d/%d)", cut, len(data))
 		}
 	}
@@ -138,13 +138,13 @@ func TestRDBTruncated(t *testing.T) {
 func TestRDBChecksumCorruption(t *testing.T) {
 	var buf bytes.Buffer
 	st := buildStore(t)
-	if err := WriteRDB(&buf, st); err != nil {
+	if err := WriteRDB(&buf, []*store.Store{st}); err != nil {
 		t.Fatal(err)
 	}
 	data := append([]byte(nil), buf.Bytes()...)
 	// flip a byte in the middle of the payload
 	data[len(data)/2] ^= 0xFF
-	if err := LoadBytes(data, store.New()); err == nil {
+	if err := LoadBytes(data, []*store.Store{store.New()}); err == nil {
 		t.Fatal("expected checksum mismatch error")
 	}
 }
@@ -153,13 +153,13 @@ func TestRDBChecksumZeroSkipsVerification(t *testing.T) {
 	// Zero checksum must load fine (written with checksum disabled, like Redis).
 	var buf bytes.Buffer
 	st := buildStore(t)
-	if err := WriteRDB(&buf, st); err != nil {
+	if err := WriteRDB(&buf, []*store.Store{st}); err != nil {
 		t.Fatal(err)
 	}
 	data := append([]byte(nil), buf.Bytes()...)
 	copy(data[len(data)-8:], make([]byte, 8))
 	got := store.New()
-	if err := LoadBytes(data, got); err != nil {
+	if err := LoadBytes(data, []*store.Store{got}); err != nil {
 		t.Fatalf("zero-checksum load: %v", err)
 	}
 	if got.Len() == 0 {
@@ -188,13 +188,13 @@ func TestRDBZSetBinaryScores(t *testing.T) {
 func TestRDBCorruptLength(t *testing.T) {
 	// A stream that starts with a valid header but a truncated body.
 	data := []byte("REDIS0009" + string(rune(rdbOpcodeSelectDB)) + "\x00" + string(rune(rdbTypeString)) + "\x05key\x03")
-	if err := LoadBytes(data, store.New()); err == nil {
+	if err := LoadBytes(data, []*store.Store{store.New()}); err == nil {
 		t.Fatal("expected error for truncated value")
 	}
 }
 
 func TestLoadEmptyReader(t *testing.T) {
-	if err := Load(bytes.NewReader(nil), store.New()); err == nil {
+	if err := Load(bytes.NewReader(nil), []*store.Store{store.New()}); err == nil {
 		t.Fatal("expected error for empty input")
 	}
 }

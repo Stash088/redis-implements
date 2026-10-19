@@ -102,7 +102,7 @@ func TestInteropRealRedisLoadsOurDump(t *testing.T) {
 	st.ZAdd([]byte("zset"), 2.5, []byte("b"))
 
 	path := filepath.Join(dir, "dump.rdb")
-	if err := Save(path, st); err != nil {
+	if err := Save(path, []*store.Store{st}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestInteropWeLoadRealRedisDump(t *testing.T) {
 	}
 	defer f.Close()
 	st := store.New()
-	if err := Load(f, st); err != nil {
+	if err := Load(f, []*store.Store{st}); err != nil {
 		t.Fatalf("Load real redis dump: %v", err)
 	}
 

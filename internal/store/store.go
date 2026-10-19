@@ -110,6 +110,24 @@ func (s *Store) Len() int {
 	return n
 }
 
+// Stats returns the number of live keys and the number of keys that carry a
+// TTL. It backs the "# Keyspace" section of INFO.
+func (s *Store) Stats() (keys, expires int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := s.clock()
+	for _, e := range s.data {
+		if e.Expired(now) {
+			continue
+		}
+		keys++
+		if !e.ExpiresAt.IsZero() {
+			expires++
+		}
+	}
+	return keys, expires
+}
+
 // entryLocked returns the live entry for key, or nil when missing/expired
 // (removing it in the latter case). Callers must hold s.mu for writing.
 func (s *Store) entryLocked(key []byte) (*Entry, bool) {

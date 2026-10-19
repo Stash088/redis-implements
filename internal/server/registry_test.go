@@ -9,10 +9,10 @@ import (
 // that mutates the dataset but is missing here would silently lose data on
 // AOF replay.
 var aofWriteCommandList = []string{
-	"append", "decr", "decrby", "del", "expire", "expireat", "flushdb",
-	"hdel", "hset", "incr", "incrby", "lpop", "lpush", "lset", "persist",
-	"pexpire", "pexpireat", "rpop", "rpush", "sadd", "set", "srem", "zadd",
-	"zrem",
+	"append", "decr", "decrby", "del", "expire", "expireat", "flushall",
+	"flushdb", "hdel", "hset", "incr", "incrby", "lpop", "lpush", "lset",
+	"persist", "pexpire", "pexpireat", "rpop", "rpush", "sadd", "set", "srem",
+	"zadd", "zrem",
 }
 
 // memoryAddCommandList is the set of commands that can grow the dataset; they

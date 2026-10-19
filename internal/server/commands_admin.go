@@ -286,8 +286,8 @@ func writeClientList(ctx *Ctx) error {
 	for i, c := range clients {
 		inMulti, watchCount := c.txnState()
 		sub, psub := s.PubSub.clientSubs(c)
-		fmt.Fprintf(&b, "id=%d addr=%s name=%s age=%d db=0 sub=%d psub=%d multi=%d watch=%d cmd=%s",
-			c.id, c.addr, c.getName(), int64(now.Sub(c.created).Seconds()),
+		fmt.Fprintf(&b, "id=%d addr=%s name=%s age=%d db=%d sub=%d psub=%d multi=%d watch=%d cmd=%s",
+			c.id, c.addr, c.getName(), int64(now.Sub(c.created).Seconds()), c.db,
 			sub, psub, inMulti, watchCount, c.lastCmd)
 		if i < len(clients)-1 {
 			b.WriteString("\n")

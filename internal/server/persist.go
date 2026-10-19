@@ -45,7 +45,7 @@ func (s *Server) saveRDB() error {
 	if s.DBPath == "" {
 		return nil
 	}
-	return persist.Save(s.DBPath, s.Store)
+	return persist.Save(s.DBPath, s.dbs)
 }
 
 // Shutdown performs a final RDB save (if changes are pending) and closes the
@@ -109,7 +109,7 @@ func cmdBGREWRITEAOF(ctx *Ctx) error {
 	go func() {
 		defer ctx.Srv.aofMu.Unlock()
 		if err := ctx.Srv.AOF.Rewrite(func(w io.Writer) error {
-			return persist.DatasetCommands(w, ctx.Srv.Store, ctx.Srv.Store.Now())
+			return persist.DatasetCommands(w, ctx.Srv.dbs, ctx.Srv.dbs[0].Now())
 		}); err != nil {
 			ctx.Srv.Logger.Printf("server: bgrewriteaof: %v", err)
 		}

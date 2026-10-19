@@ -20,7 +20,11 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	st := store.New()
+	// One store per database (keyspace).
+	dbs := make([]*store.Store, cfg.Databases)
+	for i := range dbs {
+		dbs[i] = store.New()
+	}
 
 	dbPath := filepath.Join(cfg.Dir, cfg.DBFilename)
 	aofPath := filepath.Join(cfg.Dir, cfg.AppendFilename)
@@ -30,11 +34,11 @@ func main() {
 	// otherwise fall back to the RDB snapshot.
 	switch {
 	case cfg.AppendOnly && aofExists:
-		if err := loadAOF(aofPath, st); err != nil {
+		if err := loadAOF(aofPath, dbs); err != nil {
 			log.Fatalf("aof load: %v", err)
 		}
 	case fileExists(dbPath):
-		if err := loadRDB(dbPath, st); err != nil {
+		if err := loadRDB(dbPath, dbs); err != nil {
 			log.Fatalf("rdb load: %v", err)
 		}
 	}
@@ -46,19 +50,19 @@ func main() {
 			log.Fatalf("aof: %v", err)
 		}
 		// Seed the AOF with the loaded dataset when it was created fresh.
-		if !aofExists && st.Len() > 0 {
+		if !aofExists && totalKeys(dbs) > 0 {
 			if err := aof.Rewrite(func(w io.Writer) error {
-				return persist.DatasetCommands(w, st, st.Now())
+				return persist.DatasetCommands(w, dbs, dbs[0].Now())
 			}); err != nil {
 				log.Fatalf("aof seed: %v", err)
 			}
 		}
 	}
 
-	exp := store.NewExpirer(st, 0)
+	exp := store.NewExpirer(dbs, 0)
 	exp.Start()
 
-	srv, err := server.New(cfg.Addr(), st)
+	srv, err := server.New(cfg.Addr(), dbs)
 	if err != nil {
 		log.Fatalf("server: failed to listen on %s: %v", cfg.Addr(), err)
 	}
@@ -105,20 +109,29 @@ func fileExists(path string) bool {
 	return err == nil && !fi.IsDir()
 }
 
-func loadRDB(path string, st *store.Store) error {
+func loadRDB(path string, dbs []*store.Store) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return persist.Load(f, st)
+	return persist.Load(f, dbs)
 }
 
-func loadAOF(path string, st *store.Store) error {
+func loadAOF(path string, dbs []*store.Store) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return persist.LoadAOF(f, st)
+	return persist.LoadAOF(f, dbs)
+}
+
+// totalKeys returns the number of live keys across all databases.
+func totalKeys(dbs []*store.Store) int {
+	n := 0
+	for _, db := range dbs {
+		n += db.Len()
+	}
+	return n
 }

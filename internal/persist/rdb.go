@@ -69,15 +69,15 @@ const (
 	encInt64 rdbEncoding = rdbEncInt64
 )
 
-// Save writes an RDB snapshot of st to path atomically (tmp file + fsync +
-// rename). Files are created with 0600 permissions.
-func Save(path string, st *store.Store) error {
+// Save writes an RDB snapshot of the given databases to path atomically (tmp
+// file + fsync + rename). Files are created with 0600 permissions.
+func Save(path string, stores []*store.Store) error {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
 	if err != nil {
 		return fmt.Errorf("persist: create temp: %w", err)
 	}
 	tmp := f.Name()
-	if err := WriteRDB(f, st); err != nil {
+	if err := WriteRDB(f, stores); err != nil {
 		f.Close()
 		os.Remove(tmp)
 		return err
@@ -98,45 +98,57 @@ func Save(path string, st *store.Store) error {
 	return nil
 }
 
-// WriteRDB serializes the live dataset of st as an RDB snapshot into w.
-func WriteRDB(w io.Writer, st *store.Store) error {
-	var entries []struct {
-		key string
-		e   *store.Entry
-	}
+// rdbEntry is one key/value pair of a database, captured for serialization.
+type rdbEntry struct {
+	key string
+	e   *store.Entry
+}
+
+// rdbEntries collects the live entries of a database.
+func rdbEntries(st *store.Store) ([]rdbEntry, error) {
+	var entries []rdbEntry
 	err := st.ForEach(func(key string, e *store.Entry) error {
-		entries = append(entries, struct {
-			key string
-			e   *store.Entry
-		}{key, e})
+		entries = append(entries, rdbEntry{key, e})
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return entries, nil
+}
 
+// WriteRDB serializes the live dataset of every given database as an RDB
+// snapshot into w. Each database is preceded by a SELECTDB opcode, like
+// Redis does.
+func WriteRDB(w io.Writer, stores []*store.Store) error {
 	buf := newRDBBuf()
 	buf.str("REDIS" + rdbVersion)
-	buf.byte(rdbOpcodeSelectDB)
-	buf.writeLen(0)
-	buf.byte(rdbOpcodeResizeDB)
-	buf.writeLen(uint64(len(entries)))
-	expires := 0
-	for _, se := range entries {
-		if !se.e.ExpiresAt.IsZero() {
-			expires++
-		}
-	}
-	buf.writeLen(uint64(expires))
-	for _, se := range entries {
-		if !se.e.ExpiresAt.IsZero() {
-			buf.byte(rdbOpcodeExpireTimeMS)
-			var b [8]byte
-			binary.LittleEndian.PutUint64(b[:], uint64(se.e.ExpiresAt.UnixMilli()))
-			buf.raw(b[:])
-		}
-		if err := rdbWriteValue(buf, se.e, []byte(se.key)); err != nil {
+	for i, st := range stores {
+		entries, err := rdbEntries(st)
+		if err != nil {
 			return err
+		}
+		buf.byte(rdbOpcodeSelectDB)
+		buf.writeLen(uint64(i))
+		buf.byte(rdbOpcodeResizeDB)
+		buf.writeLen(uint64(len(entries)))
+		expires := 0
+		for _, se := range entries {
+			if !se.e.ExpiresAt.IsZero() {
+				expires++
+			}
+		}
+		buf.writeLen(uint64(expires))
+		for _, se := range entries {
+			if !se.e.ExpiresAt.IsZero() {
+				buf.byte(rdbOpcodeExpireTimeMS)
+				var b [8]byte
+				binary.LittleEndian.PutUint64(b[:], uint64(se.e.ExpiresAt.UnixMilli()))
+				buf.raw(b[:])
+			}
+			if err := rdbWriteValue(buf, se.e, []byte(se.key)); err != nil {
+				return err
+			}
 		}
 	}
 	buf.byte(rdbOpcodeEOF)
@@ -145,7 +157,7 @@ func WriteRDB(w io.Writer, st *store.Store) error {
 	var cb [8]byte
 	binary.LittleEndian.PutUint64(cb[:], crc)
 	buf.raw(cb[:])
-	_, err = w.Write(buf.b)
+	_, err := w.Write(buf.b)
 	return err
 }
 
@@ -239,19 +251,20 @@ func rdbWriteValue(b *rdbBuf, e *store.Entry, key []byte) error {
 	return nil
 }
 
-// Load reads an RDB snapshot from r into st. Keys whose expiry has already
-// passed (per the store clock) are skipped.
-func Load(r io.Reader, st *store.Store) error {
+// Load reads an RDB snapshot from r into the given databases. A SELECTDB
+// opcode switches the target database, like Redis does. Keys whose expiry has
+// already passed (per the store clock) are skipped.
+func Load(r io.Reader, stores []*store.Store) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("persist: read rdb: %w", err)
 	}
-	return LoadBytes(data, st)
+	return LoadBytes(data, stores)
 }
 
 // LoadBytes parses an RDB snapshot held in memory.
-func LoadBytes(data []byte, st *store.Store) error {
-	d := &rdbDecoder{data: data, st: st}
+func LoadBytes(data []byte, stores []*store.Store) error {
+	d := &rdbDecoder{data: data, stores: stores}
 	if err := d.header(); err != nil {
 		return err
 	}
@@ -262,10 +275,20 @@ func LoadBytes(data []byte, st *store.Store) error {
 }
 
 type rdbDecoder struct {
-	data []byte
-	pos  int
-	st   *store.Store
-	exp  time.Time // pending expiry from EXPIRETIME_MS opcode
+	data   []byte
+	pos    int
+	stores []*store.Store
+	db     int       // current database (SELECTDB opcode)
+	exp    time.Time // pending expiry from EXPIRETIME_MS opcode
+}
+
+// store returns the database the decoder currently writes into, or nil when
+// the snapshot refers to a database this server does not have.
+func (d *rdbDecoder) store() *store.Store {
+	if len(d.stores) == 0 || d.db < 0 || d.db >= len(d.stores) {
+		return nil
+	}
+	return d.stores[d.db]
 }
 
 func (d *rdbDecoder) header() error {
@@ -286,9 +309,11 @@ func (d *rdbDecoder) body() error {
 		case op == rdbOpcodeEOF:
 			return nil
 		case op == rdbOpcodeSelectDB:
-			if _, err := d.readLen(); err != nil {
+			n, err := d.readLen()
+			if err != nil {
 				return err
 			}
+			d.db = int(n)
 		case op == rdbOpcodeResizeDB:
 			if _, err := d.readLen(); err != nil {
 				return err
@@ -517,10 +542,16 @@ func (d *rdbDecoder) keyValue(op byte) error {
 	default:
 		return fmt.Errorf("persist: unsupported RDB value type %d", op)
 	}
-	if !e.ExpiresAt.IsZero() && d.st.Now().After(e.ExpiresAt) {
+	st := d.store()
+	if st == nil {
+		// The snapshot refers to a database this server does not have:
+		// its keys are skipped, like Redis does.
+		return nil
+	}
+	if !e.ExpiresAt.IsZero() && st.Now().After(e.ExpiresAt) {
 		return nil // expired while the snapshot was in flight
 	}
-	d.st.RestoreEntry(string(key), e)
+	st.RestoreEntry(string(key), e)
 	return nil
 }
 

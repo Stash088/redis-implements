@@ -24,9 +24,9 @@ func startTestServer(t *testing.T) string {
 func startTestServerStore(t *testing.T, st *store.Store, expirer bool) string {
 	t.Helper()
 	if expirer {
-		exp := store.NewExpirer(st, 10*time.Millisecond)
+		exp := store.NewExpirer([]*store.Store{st}, 10*time.Millisecond)
 		exp.Start()
-		srv, err := server.New("127.0.0.1:0", st)
+		srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 		if err != nil {
 			t.Fatalf("server.New: %v", err)
 		}
@@ -36,11 +36,31 @@ func startTestServerStore(t *testing.T, st *store.Store, expirer bool) string {
 		t.Cleanup(func() { srv.Close() })
 		return srv.Addr().String()
 	}
-	srv, err := server.New("127.0.0.1:0", st)
+	srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
 	srv.SetLogger(log.New(io.Discard, "", 0))
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+	return srv.Addr().String()
+}
+
+// startTestServerDBs runs a server with the given number of databases.
+func startTestServerDBs(t *testing.T, n int) string {
+	t.Helper()
+	dbs := make([]*store.Store, n)
+	for i := range dbs {
+		dbs[i] = store.New()
+	}
+	exp := store.NewExpirer(dbs, 10*time.Millisecond)
+	exp.Start()
+	srv, err := server.New("127.0.0.1:0", dbs)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	srv.SetLogger(log.New(io.Discard, "", 0))
+	srv.Expirer = exp
 	go srv.Serve()
 	t.Cleanup(func() { srv.Close() })
 	return srv.Addr().String()

@@ -30,6 +30,9 @@ type Config struct {
 	// Slow log.
 	SlowlogSlowerThan int64 // microseconds, -1 disables
 	SlowlogMaxLen     int
+
+	// Databases: how many keyspaces the server offers (Redis default: 16).
+	Databases int
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -90,6 +93,7 @@ func Parse(args []string) (Config, error) {
 		MaxMemorySamples:  5,
 		SlowlogSlowerThan: 10000,
 		SlowlogMaxLen:     128,
+		Databases:         16,
 	}
 	fs.StringVar(&c.Host, "host", c.Host, "interface to bind to")
 	fs.IntVar(&c.Port, "port", c.Port, "TCP port to listen on")
@@ -105,6 +109,7 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&c.MaxMemorySamples, "maxmemory-samples", c.MaxMemorySamples, "keys to sample per eviction cycle")
 	fs.Int64Var(&c.SlowlogSlowerThan, "slowlog-log-slower-than", c.SlowlogSlowerThan, "log commands slower than this many microseconds (-1 disables)")
 	fs.IntVar(&c.SlowlogMaxLen, "slowlog-max-len", c.SlowlogMaxLen, "number of slow log entries to keep")
+	fs.IntVar(&c.Databases, "databases", c.Databases, "number of keyspaces (databases)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -127,6 +132,9 @@ func Parse(args []string) (Config, error) {
 	}
 	if c.SlowlogMaxLen < 0 {
 		return Config{}, fmt.Errorf("invalid --slowlog-max-len %d", c.SlowlogMaxLen)
+	}
+	if c.Databases < 1 {
+		return Config{}, fmt.Errorf("invalid --databases %d", c.Databases)
 	}
 	if c.DBFilename == "" || filepath.Base(c.DBFilename) != c.DBFilename {
 		return Config{}, fmt.Errorf("invalid --dbfilename %q", c.DBFilename)
