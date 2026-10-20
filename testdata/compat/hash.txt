@@ -1,0 +1,37 @@
+# Сценарий сверки: команды хэшей, второй набор.
+# Одна команда в строке; строки с # и пустые игнорируются.
+
+# --- подготовка ---
+HSET h f1 v1 f2 v2 f3 v3 f4 v4 f5 v5
+
+# --- инкременты ---
+HINCRBY h counter 5
+HINCRBY h counter -2
+HINCRBY h brandnew 3
+HINCRBYFLOAT h counter 1.5
+HINCRBYFLOAT h brandnew 0.5
+HSTRLEN h counter
+HSTRLEN h nofield
+HGETALL h
+
+# --- чтение и запись полей ---
+HMGET h f1 nofield
+HMSET h2 a 1 b 2
+HGETALL h2
+HSETNX h2 a 9
+HSETNX h2 c 3
+HGETALL h2
+HGETDEL h2 FIELDS 1 a
+HGETALL h2
+
+# --- ошибки ---
+HINCRBY h f1 1
+HINCRBYFLOAT h f1 1.0
+HINCRBY h2 a notanumber
+HINCRBYFLOAT h2 a notafloat
+HSTRLEN nosuchkey f
+HMGET nosuchkey f
+HRANDFIELD nosuchkey
+HGETDEL h2 FIELDS 2 a
+HGETDEL h2 a
+HINCRBY str f 1
