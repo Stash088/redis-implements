@@ -128,6 +128,7 @@ RESP `PING` через busybox `nc`.
 | Аутентификация | `AUTH` |
 | Базы данных | `SELECT` |
 | Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `KEYS`, `SCAN` (MATCH/COUNT) |
+| Обходы коллекций | `HSCAN`, `SSCAN`, `ZSCAN` (MATCH/COUNT, NOVALUES у HSCAN) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `MSET`, `MSETNX`, `MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE` |
 | Списки | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET` |

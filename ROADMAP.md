@@ -198,7 +198,7 @@ redis-implements/
 | M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
 | M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |
 | M9 | Строки v2: `MSET`/`MSETNX`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`/`PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE`, `INCRBYFLOAT` | ✅ |
-| M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ⏳ |
+| M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ✅ |
 | M11 | Hash v2: `HINCRBY`, `HSTRLEN`, `HRANDFIELD`, `HMGET` | ⏳ |
 | M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
 | M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `LPOS` | ⏳ |
