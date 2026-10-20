@@ -107,6 +107,19 @@ func (s *Server) registerCommands() {
 	// Protocol negotiation.
 	s.reg("HELLO", -1, cmdHello)
 
+	// Set commands (second batch).
+	s.reg("SINTERCARD", -3, cmdSInterCard)
+	s.regW("SMOVE", 4, cmdSMove)
+	s.regW("SPOP", -2, cmdSPop)
+	s.reg("SRANDMEMBER", -2, cmdSRandMember)
+	s.reg("SMISMEMBER", -3, cmdSMIsMember)
+	s.reg("SDIFF", -2, cmdSDiff)
+	s.regW("SDIFFSTORE", -3, cmdSDiffStore)
+	s.reg("SINTER", -2, cmdSInter)
+	s.regW("SINTERSTORE", -3, cmdSInterStore)
+	s.reg("SUNION", -2, cmdSUnion)
+	s.regW("SUNIONSTORE", -3, cmdSUnionStore)
+
 	// Hash commands (second batch).
 	s.regWG("HINCRBY", 4, cmdHIncrBy)
 	s.regWG("HINCRBYFLOAT", 4, cmdHIncrByFloat)
