@@ -127,7 +127,8 @@ RESP `PING` через busybox `nc`.
 | Протокол | `HELLO` |
 | Аутентификация | `AUTH` |
 | Базы данных | `SELECT` |
-| Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `KEYS`, `SCAN` (MATCH/COUNT) |
+| Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `EXPIRETIME`, `PEXPIRETIME`, `KEYS`, `SCAN` (MATCH/COUNT) |
+| Управление ключами | `RENAME`, `RENAMENX`, `COPY`, `MOVE`, `DUMP`, `RESTORE`, `SWAPDB`, `OBJECT ENCODING`, `SORT` |
 | Обходы коллекций | `HSCAN`, `SSCAN`, `ZSCAN` (MATCH/COUNT, NOVALUES у HSCAN) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `MSET`, `MSETNX`, `MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE` |

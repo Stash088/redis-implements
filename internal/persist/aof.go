@@ -368,6 +368,22 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		}
 	case "del":
 		st.Delete(args[1:]...)
+	case "rename":
+		if len(args) == 3 {
+			st.Rename(key(), args[2]) //nolint:errcheck
+		}
+	case "renamenx":
+		if len(args) == 3 {
+			st.RenameNX(key(), args[2]) //nolint:errcheck
+		}
+	case "restore":
+		// RESTORE key ttl serialized-value
+		if len(args) >= 4 {
+			if e, err := RestoreValue(args[3]); err == nil {
+				ttl, _ := strconv.ParseInt(string(args[2]), 10, 64)
+				st.RestoreEntryWithTTL(key(), e, time.Duration(ttl)*time.Millisecond)
+			}
+		}
 	case "expire":
 		if len(args) == 3 {
 			if s, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {

@@ -200,6 +200,14 @@ func (s *Server) DB(i int) *store.Store {
 // DBCount returns the number of databases.
 func (s *Server) DBCount() int { return len(s.dbs) }
 
+// SwapDBs swaps two databases.
+func (s *Server) SwapDBs(a, b int) {
+	if a < 0 || a >= len(s.dbs) || b < 0 || b >= len(s.dbs) {
+		return
+	}
+	s.dbs[a], s.dbs[b] = s.dbs[b], s.dbs[a]
+}
+
 // usedBytes returns the approximate memory footprint of all databases.
 func (s *Server) usedBytes() int {
 	n := 0
