@@ -39,9 +39,47 @@ func cmdZRange(ctx *Ctx) error    { return zrangeCommon(ctx, "zrange", false) }
 func cmdZRevRange(ctx *Ctx) error { return zrangeCommon(ctx, "zrevrange", true) }
 
 func zrangeCommon(ctx *Ctx, cmd string, reverse bool) error {
-	if len(ctx.Args) < 4 || len(ctx.Args) > 5 {
+	if len(ctx.Args) < 4 {
 		wrongArgs(ctx.W, cmd)
 		return nil
+	}
+	withScores := false
+	byScore, byLex := false, false
+	rev := false
+	offset, count := 0, 0
+	var err error
+	for i := 4; i < len(ctx.Args); {
+		switch strings.ToUpper(string(ctx.Args[i])) {
+		case "WITHSCORES":
+			withScores = true
+			i++
+		case "BYSCORE":
+			byScore = true
+			i++
+		case "BYLEX":
+			byLex = true
+			i++
+		case "REV":
+			rev = true
+			i++
+		case "LIMIT":
+			offset, count, i, err = limitArgs(ctx.Args, i)
+			if err != nil {
+				return ctx.W.WriteError(err.Error())
+			}
+		default:
+			return ctx.W.WriteError("ERR syntax error")
+		}
+	}
+	if byScore && byLex {
+		return ctx.W.WriteError("ERR syntax error")
+	}
+	if byScore || byLex {
+		// The BYSCORE/BYLEX variants take range bounds instead of indexes.
+		if byScore {
+			return zrangeByScoreInRange(ctx, withScores, rev, offset, count)
+		}
+		return zrangeByLexInRange(ctx, withScores, rev, offset, count)
 	}
 	start, err := strconv.Atoi(string(ctx.Args[2]))
 	if err != nil {
@@ -51,12 +89,34 @@ func zrangeCommon(ctx *Ctx, cmd string, reverse bool) error {
 	if err != nil {
 		return ctx.W.WriteError("ERR value is not an integer or out of range")
 	}
-	withScores := false
-	if len(ctx.Args) == 5 {
-		if !strings.EqualFold(string(ctx.Args[4]), "WITHSCORES") {
-			return ctx.W.WriteError("ERR syntax error")
+	if rev {
+		// REV without BYSCORE/BYLEX applies the indexes to the reversed
+		// order of the set, like in Redis.
+		n, err := ctx.Store.ZLen(ctx.Args[1])
+		if err != nil {
+			return writeWrongType(ctx.W)
 		}
-		withScores = true
+		if start < 0 {
+			start = n + start
+		}
+		if stop < 0 {
+			stop = n + stop
+		}
+		if start < 0 {
+			start = 0
+		}
+		if stop >= n {
+			stop = n - 1
+		}
+		if start > stop {
+			return writeZEntries(ctx, nil, withScores)
+		}
+		all, err := ctx.Store.ZRange(ctx.Args[1], 0, -1, false)
+		if err != nil {
+			return writeWrongType(ctx.W)
+		}
+		reversed := reverseEntries(all)
+		return writeZEntries(ctx, reversed[start:stop+1], withScores)
 	}
 	entries, err := ctx.Store.ZRange(ctx.Args[1], start, stop, reverse)
 	if err != nil {

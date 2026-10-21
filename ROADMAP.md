@@ -202,7 +202,7 @@ redis-implements/
 | M11 | Hash v2: `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD`, `HGETDEL` | ✅ |
 | M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
 | M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `RPOPLPUSH`, `LPOS`, `LPUSHX`/`RPUSHX` | ✅ |
-| M14 | ZSet v2: `ZRANGEBYSCORE`/`BYLEX`, `ZINCRBY`, `ZUNIONSTORE`, `ZPOPMIN` | ⏳ |
+| M14 | ZSet v2 (часть 1): `ZRANGEBYSCORE`/`BYLEX`, `ZINCRBY`, `ZCOUNT`, `ZMSCORE`, `ZLEXCOUNT`, `ZRANGE BYSCORE/BYLEX/REV` | ✅ |
 | M15 | Блокирующие команды: `BLPOP`, `BRPOP`, `BZPOPMIN` | ⏳ |
 | M16 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |
 | M17 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
