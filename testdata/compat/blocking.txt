@@ -1,24 +1,24 @@
 # Сценарий сверки: блокирующие команды.
 # Внимание: команды с ожиданием блокируют сценарий, поэтому здесь только
-# неблокирующие случаи (значение уже есть) и ошибки.
+# случаи, где значение уже есть, и короткие таймауты.
 
 RPUSH l a b
-BLPOP l 0
-BLPOP l 0
-BRPOP l 0
+BLPOP l 0.1
+BLPOP l 0.1
+BRPOP l 0.1
 RPUSH l c
-BRPOP l 0
+BRPOP l 0.1
 
 ZADD z 1 m1 2 m2
-BZPOPMIN z 0
-BZPOPMAX z 0
+BZPOPMIN z 0.1
+BZPOPMAX z 0.1
 
 RPUSH src m
-BLMOVE src dst LEFT RIGHT 0
+BLMOVE src dst LEFT RIGHT 0.1
 LRANGE dst 0 -1
 
 SET str v
-BLPOP str 0
-BRPOP str 0
-BZPOPMIN str 0
-BLMOVE str dst LEFT RIGHT 0
+BLPOP str 0.1
+BRPOP str 0.1
+BZPOPMIN str 0.1
+BLMOVE str dst LEFT RIGHT 0.1

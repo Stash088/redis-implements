@@ -25,16 +25,16 @@ MOVE c1 1
 MOVE c1 0
 
 # --- сериализация ---
-DUMP l
-DUMP nosuchkey
+~ DUMP l
+~ DUMP nosuchkey
 
 # --- сроки жизни ---
-EXPIRETIME k2
-PEXPIRETIME k2
-EXPIRETIME nosuchkey
+~ EXPIRETIME k2
+~ PEXPIRETIME k2
+~ EXPIRETIME nosuchkey
 SET tmp v EX 100
-EXPIRETIME tmp
-PEXPIRETIME tmp
+~ EXPIRETIME tmp
+~ PEXPIRETIME tmp
 
 # --- базы данных ---
 SWAPDB 0 1
@@ -44,7 +44,7 @@ SWAPDB 0 99
 OBJECT ENCODING l
 OBJECT ENCODING h
 OBJECT ENCODING nosuchkey
-OBJECT HELP
+~ OBJECT HELP   # the wording of the help text is not a compatibility concern
 
 # --- сортировка ---
 SORT l

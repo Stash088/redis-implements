@@ -190,26 +190,28 @@ redis-implements/
 |---|---|---|
 | **M0** | Гигиена и быстрые победы: нестабильный тест Pub/Sub, чтения на `RLock`, единый реестр команд | ✅ |
 | M1 | Батчинг пайплайна + снижение аллокаций в RESP-парсере | ✅ |
-| M2 | Шардирование стора (после M0–M1, по замерам) | ⏳ |
+| M2 | Шардирование стора — **отложено** (после M1 узкое место — syscall'ы, а не блокировка) | ⏳ |
 | M3 | `SELECT` и мульти-БД (16 баз) | ✅ |
 | M4 | `HELLO` + RESP3 (map/set/double/bignum/verbatim/push) | ✅ |
 | M5 | `AUTH` / `--requirepass` | ✅ |
 | M6 | Админ-команды v2: `COMMAND`, `RESET`, `CLIENT INFO/KILL/REPLY`, `PUBSUB CHANNELS`, `UNLINK`, `TOUCH`, `RANDOMKEY`, `TIME`, `DEBUG` | ✅ |
-| M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
-| M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |
+| M7 | Управление ключами — сделано в вехе **M16** | ✅ |
+| M8 | Харнесс сверки — сделан в вехе **M18** | ✅ |
 | M9 | Строки v2: `MSET`/`MSETNX`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`/`PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE`, `INCRBYFLOAT` | ✅ |
 | M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ✅ |
 | M11 | Hash v2: `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD`, `HGETDEL` | ✅ |
-| M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
+| M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SMISMEMBER`, `SDIFF`/`SINTER`/`SUNION` + `_STORE` | ✅ |
 | M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `RPOPLPUSH`, `LPOS`, `LPUSHX`/`RPUSHX` | ✅ |
 | M14 | ZSet v2 (часть 1): `ZRANGEBYSCORE`/`BYLEX`, `ZINCRBY`, `ZCOUNT`, `ZMSCORE`, `ZLEXCOUNT`, `ZRANGE BYSCORE/BYLEX/REV` | ✅ |
 | M15 | ZSet v2 (часть 2): `ZUNIONSTORE`/`ZINTERSTORE`/`ZDIFF`/`ZINTERCARD`, `ZREMRANGEBY*`, `ZPOPMIN`/`ZPOPMAX`, `ZRANDMEMBER`, `ZRANGESTORE` | ✅ |
-| M15 | Блокирующие команды: `BLPOP`, `BRPOP`, `BZPOPMIN` | ⏳ |
-| M16 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |
-| M17 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
-| M18 | Streams: персистентность (RDB-энкодинг, AOF) | ⏳ |
-| M19 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |
-| M20 | Репликация: инкрементальная синхронизация (`WAIT`, partial resync) | ⏳ |
+| M16 | Управление ключами: `RENAME`/`RENAMENX`, `COPY`, `MOVE`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SWAPDB`, `OBJECT`, `SORT` | ✅ |
+| M17 | Блокирующие команды: `BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX` | ✅ |
+| M18 | Харнесс сверки с настоящим Redis (`cmd/compat-check` + `testdata/compat`) | ✅ |
+| M19 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |
+| M20 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
+| M21 | Streams: персистентность (RDB-энкодинг с полной интероп-совместимостью, AOF) | ⏳ |
+| M22 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |
+| M23 | Репликация: инкрементальная синхронизация (`WAIT`, partial resync) | ⏳ |
 
 Отложено до отдельного решения: кластер, Lua (`EVAL`), TLS/Unix-сокеты, `ACL`,
 Geo, HyperLogLog, битовые операции.
