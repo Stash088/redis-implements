@@ -408,6 +408,50 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		st.ListPush(key(), true, args[2:]...)
 	case "rpush":
 		st.ListPush(key(), false, args[2:]...)
+	case "linsert":
+		// LINSERT key BEFORE|AFTER pivot element
+		if len(args) == 5 {
+			before := strings.EqualFold(string(args[2]), "BEFORE")
+			st.ListInsert(key(), before, args[3], args[4]) //nolint:errcheck
+		}
+	case "lrem":
+		// LREM key count element
+		if len(args) == 4 {
+			if n, err := strconv.Atoi(string(args[2])); err == nil {
+				st.ListRemove(key(), n, args[3]) //nolint:errcheck
+			}
+		}
+	case "ltrim":
+		// LTRIM key start stop
+		if len(args) == 4 {
+			start, err1 := strconv.Atoi(string(args[2]))
+			stop, err2 := strconv.Atoi(string(args[3]))
+			if err1 == nil && err2 == nil {
+				st.ListTrim(key(), start, stop) //nolint:errcheck
+			}
+		}
+	case "lmove":
+		// LMOVE source destination LEFT|RIGHT LEFT|RIGHT
+		if len(args) == 5 {
+			fromLeft := strings.EqualFold(string(args[3]), "LEFT")
+			toLeft := strings.EqualFold(string(args[4]), "LEFT")
+			st.ListMove(key(), args[2], fromLeft, toLeft) //nolint:errcheck
+		}
+	case "rpoplpush":
+		// RPOPLPUSH source destination
+		if len(args) == 3 {
+			st.ListMove(key(), args[2], false, true) //nolint:errcheck
+		}
+	case "lpushx":
+		// LPUSHX key element [element ...]
+		if len(args) >= 3 {
+			st.ListPushExist(key(), true, args[2:]) //nolint:errcheck
+		}
+	case "rpushx":
+		// RPUSHX key element [element ...]
+		if len(args) >= 3 {
+			st.ListPushExist(key(), false, args[2:]) //nolint:errcheck
+		}
 	case "lpop":
 		if len(args) == 2 {
 			st.ListPop(key(), true)

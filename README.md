@@ -131,7 +131,7 @@ RESP `PING` через busybox `nc`.
 | Обходы коллекций | `HSCAN`, `SSCAN`, `ZSCAN` (MATCH/COUNT, NOVALUES у HSCAN) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `MSET`, `MSETNX`, `MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE` |
-| Списки | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET` |
+| Списки | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET`, `LINSERT`, `LREM`, `LTRIM`, `LPOS`, `LMOVE`, `RPOPLPUSH`, `LPUSHX`, `RPUSHX` |
 | Хэши | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS`, `HKEYS`, `HVALS`, `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD`, `HGETDEL` |
 | Множества | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SMISMEMBER`, `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SDIFF`, `SINTER`, `SUNION` (+ варианты `_STORE`) |
 | Сортированные множества | `ZADD`, `ZRANGE`, `ZREVRANGE` (вкл. `WITHSCORES`), `ZSCORE`, `ZREM`, `ZCARD`, `ZRANK`, `ZREVRANK` |

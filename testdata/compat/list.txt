@@ -1,0 +1,55 @@
+# Сценарий сверки: команды списков, второй набор.
+
+# --- подготовка ---
+RPUSH l a b c d e
+RPUSH l2 a b a c a
+
+# --- вставка ---
+LINSERT l BEFORE b X
+LRANGE l 0 -1
+LINSERT l AFTER d Y
+LRANGE l 0 -1
+LINSERT l BOGUS b Z
+LINSERT l BEFORE nosuch Z
+LINSERT nosuchkey BEFORE a Z
+
+# --- удаление и обрезка ---
+LREM l 0 a
+LRANGE l 0 -1
+LTRIM l 1 -1
+LRANGE l 0 -1
+
+# --- поиск позиции ---
+LPOS l2 a
+LPOS l2 nosuch
+LPOS l2 a COUNT 0
+LPOS l2 a COUNT 2
+LPOS l2 a COUNT -1
+LPOS l2 a RANK 2
+LPOS l2 a RANK -1
+LPOS l2 a COUNT 0 MAXLEN 2
+LPOS l2 a MAXLEN -1
+
+# --- перенос элементов ---
+LMOVE l2 dest LEFT RIGHT
+LRANGE dest 0 -1
+RPOPLPUSH l2 dest2
+LRANGE dest2 0 -1
+LMOVE nosuchkey dest LEFT RIGHT
+LMOVE l2 dest LEFT BOGUS
+
+# --- push только для существующих ключей ---
+LPUSHX dest X
+LRANGE dest 0 -1
+RPUSHX dest Y
+LPUSHX nosuchkey X
+EXISTS nosuchkey
+
+# --- ошибки ---
+LINSERT str BEFORE a b
+LREM str 0 a
+LTRIM str 0 -1
+LPOS str a
+LMOVE str dest LEFT RIGHT
+RPOPLPUSH str dest
+LPUSHX str a

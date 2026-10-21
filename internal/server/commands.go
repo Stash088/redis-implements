@@ -107,6 +107,16 @@ func (s *Server) registerCommands() {
 	// Protocol negotiation.
 	s.reg("HELLO", -1, cmdHello)
 
+	// List commands (second batch).
+	s.regW("LINSERT", 5, cmdLInsert)
+	s.regW("LREM", 4, cmdLRem)
+	s.regW("LTRIM", 4, cmdLTrim)
+	s.reg("LPOS", -3, cmdLPos)
+	s.regW("LMOVE", 5, cmdLMove)
+	s.regW("RPOPLPUSH", 3, cmdRPopLPush)
+	s.regWG("LPUSHX", -3, cmdLPushX)
+	s.regWG("RPUSHX", -3, cmdRPushX)
+
 	// Set commands (second batch).
 	s.reg("SINTERCARD", -3, cmdSInterCard)
 	s.regW("SMOVE", 4, cmdSMove)
