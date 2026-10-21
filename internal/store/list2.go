@@ -220,6 +220,41 @@ func (s *Store) ListMove(source, dest []byte, fromLeft, toLeft bool) ([]byte, bo
 	return v, true, nil
 }
 
+// ListPopAny pops an element from the first non-empty list of the given
+// keys. It returns the key the element came from, and reports whether an
+// element was popped.
+func (s *Store) ListPopAny(keys [][]byte, left bool) (key []byte, value []byte, ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clock()
+	for _, k := range keys {
+		e, ok := s.data[string(k)]
+		if !ok || e.Expired(now) {
+			continue
+		}
+		if e.Type != TypeList {
+			return nil, nil, false, ErrWrongType
+		}
+		if e.List.Len() == 0 {
+			continue
+		}
+		var v []byte
+		if left {
+			v, _ = e.List.PopFront()
+		} else {
+			v, _ = e.List.PopBack()
+		}
+		s.touchLocked(string(k))
+		s.addCost(e, -(len(v) + elemOverhead))
+		if e.List.Len() == 0 {
+			s.usedBytes -= e.cost
+			delete(s.data, string(k))
+		}
+		return k, v, true, nil
+	}
+	return nil, nil, false, nil
+}
+
 // ListPushExist pushes values to an existing list. It reports whether the
 // list existed.
 func (s *Store) ListPushExist(key []byte, left bool, values [][]byte) (int, bool, error) {

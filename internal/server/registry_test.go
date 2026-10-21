@@ -15,6 +15,7 @@ var aofWriteCommandList = []string{
 	"linsert", "lmove", "lrem", "ltrim", "lpushx", "persist", "pexpire", "pexpireat",
 	"rename", "renamenx", "restore", "rpop", "rpoplpush", "rpush", "rpushx",
 	"sadd", "sdiffstore", "set", "sinterstore",
+	"blmove", "blpop", "brpop", "bzpopmax", "bzpopmin",
 	"copy", "move", "smove", "spop", "srem", "sunionstore", "swapdb",
 	"unlink", "zadd", "zdiffstore",
 	"zincrby", "zinterstore", "zpopmax", "zpopmin", "zrem",
