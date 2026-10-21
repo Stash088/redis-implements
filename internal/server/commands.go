@@ -107,6 +107,20 @@ func (s *Server) registerCommands() {
 	// Protocol negotiation.
 	s.reg("HELLO", -1, cmdHello)
 
+	// Sorted set commands (third batch: set operations and removals).
+	s.regW("ZUNIONSTORE", -4, cmdZUnionStore)
+	s.regW("ZINTERSTORE", -4, cmdZInterStore)
+	s.reg("ZDIFF", -3, cmdZDiff)
+	s.regW("ZDIFFSTORE", -4, cmdZDiffStore)
+	s.reg("ZINTERCARD", -3, cmdZInterCard)
+	s.regW("ZREMRANGEBYRANK", 4, cmdZRemRangeByRank)
+	s.regW("ZREMRANGEBYSCORE", 4, cmdZRemRangeByScore)
+	s.regW("ZREMRANGEBYLEX", 4, cmdZRemRangeByLex)
+	s.regW("ZPOPMIN", -2, cmdZPopMin)
+	s.regW("ZPOPMAX", -2, cmdZPopMax)
+	s.reg("ZRANDMEMBER", -2, cmdZRandMember)
+	s.regW("ZRANGESTORE", -5, cmdZRangeStore)
+
 	// Sorted set commands (second batch).
 	s.regWG("ZINCRBY", 4, cmdZIncrBy)
 	s.reg("ZCOUNT", 4, cmdZCount)

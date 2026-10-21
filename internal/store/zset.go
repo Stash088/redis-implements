@@ -92,6 +92,19 @@ func (z *ZSet) Range(start, stop int, reverse bool) []ZEntry {
 	return out
 }
 
+// entryAt returns the entry at the given rank (0-based), or nil when the rank
+// is out of range.
+func (z *ZSet) entryAt(rank int) *ZEntry {
+	if rank < 0 || rank >= z.Len() {
+		return nil
+	}
+	node := z.sl.nodeByRank(int64(rank + 1))
+	if node == nil {
+		return nil
+	}
+	return &ZEntry{Member: node.member, Score: node.score}
+}
+
 // Rank returns the 0-based rank of member from lowest score (or from highest
 // when reverse is true), and false when member is not in the set.
 func (z *ZSet) Rank(member []byte, reverse bool) (int64, bool) {

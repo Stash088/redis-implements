@@ -14,7 +14,10 @@ var aofWriteCommandList = []string{
 	"hgetdel", "hincrby", "hincrbyfloat", "hmset", "hsetnx", "incrbyfloat",
 	"linsert", "lmove", "lrem", "ltrim", "lpushx", "persist", "pexpire", "pexpireat",
 	"rpop", "rpoplpush", "rpush", "rpushx", "sadd", "sdiffstore", "set", "sinterstore",
-	"smove", "spop", "srem", "sunionstore", "unlink", "zadd", "zincrby", "zrem",
+	"smove", "spop", "srem", "sunionstore", "unlink", "zadd", "zdiffstore",
+	"zincrby", "zinterstore", "zpopmax", "zpopmin", "zrem",
+	"zremrangebylex", "zremrangebyrank", "zremrangebyscore", "zrangestore",
+	"zunionstore",
 }
 
 // memoryAddCommandList is the set of commands that can grow the dataset; they

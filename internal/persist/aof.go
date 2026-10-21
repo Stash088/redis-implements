@@ -508,6 +508,45 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		st.SetAdd(key(), args[2:]...)
 	case "srem":
 		st.SetRem(key(), args[2:]...)
+	case "zpopmin", "zpopmax":
+		// ZPOPMIN|ZPOPMAX key [count]
+		if len(args) >= 2 {
+			count := 0
+			if len(args) == 3 {
+				if n, err := strconv.Atoi(string(args[2])); err == nil {
+					count = n
+				}
+			}
+			st.ZPop(key(), count, name == "zpopmin") //nolint:errcheck
+		}
+	case "zremrangebyrank":
+		// ZREMRANGEBYRANK key start stop
+		if len(args) == 4 {
+			start, err1 := strconv.Atoi(string(args[2]))
+			stop, err2 := strconv.Atoi(string(args[3]))
+			if err1 == nil && err2 == nil {
+				st.ZRemRangeByRank(key(), start, stop) //nolint:errcheck
+			}
+		}
+	case "zunionstore", "zinterstore":
+		// ZUNIONSTORE|ZINTERSTORE dest numkeys key [key ...]
+		if len(args) >= 4 {
+			if n, err := strconv.Atoi(string(args[2])); err == nil && n >= 1 && len(args) >= 3+n {
+				keys := args[3 : 3+n]
+				if name == "zunionstore" {
+					st.ZUnionStore(args[1], keys, nil, store.AggregateSum) //nolint:errcheck
+				} else {
+					st.ZInterStore(args[1], keys, nil, store.AggregateSum) //nolint:errcheck
+				}
+			}
+		}
+	case "zdiffstore":
+		// ZDIFFSTORE dest numkeys key [key ...]
+		if len(args) >= 4 {
+			if n, err := strconv.Atoi(string(args[2])); err == nil && n >= 1 && len(args) >= 3+n {
+				st.ZDiffStore(args[1], args[3:3+n]) //nolint:errcheck
+			}
+		}
 	case "zincrby":
 		// ZINCRBY key increment member
 		if len(args) == 4 {
