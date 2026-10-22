@@ -1,0 +1,65 @@
+# Сценарий сверки: группы потребителей и чтение потоков (Streams).
+
+# --- подготовка ---
+XADD s 1-0 f1 v1
+XADD s 2-0 f2 v2
+XADD s 3-0 f3 v3
+
+# --- группы потребителей ---
+XGROUP CREATE s g 0
+XGROUP CREATE s g 0
+XGROUP CREATE nosuch g 0
+XGROUP CREATE nosuch g 0 MKSTREAM
+XGROUP DESTROY nosuch g
+XGROUP CREATECONSUMER s g c1
+XGROUP CREATECONSUMER s g c1
+XGROUP DELCONSUMER s g c1
+XGROUP SETID s g 1-0
+XGROUP SETID nosuch g 1-0
+XGROUP HELP
+
+# --- чтение без группы ---
+XREAD COUNT 10 STREAMS s 0
+XREAD COUNT 10 STREAMS s 1-0
+XREAD COUNT 10 STREAMS s +
+XREAD COUNT 2 STREAMS s 0
+XREAD COUNT 10 STREAMS nosuch 0
+~ XREAD COUNT 10 STREAMS s $
+XREAD COUNT 10 STREAMS s 0 0
+
+# --- чтение группой ---
+XREADGROUP GROUP g c1 COUNT 10 STREAMS s >
+XREADGROUP GROUP g c1 COUNT 10 STREAMS s 0
+XREADGROUP GROUP g c1 COUNT 10 STREAMS s >
+XREADGROUP GROUP nosuch c1 COUNT 10 STREAMS s >
+XREADGROUP GROUP g c1 COUNT 10 STREAMS s $
+XREADGROUP COUNT 10 STREAMS s >
+
+# --- неподтверждённые записи ---
+# Время простоя (idle) зависит от часов, поэтому диапазонная форма
+# ответа не сравнивается: команда выполняется, а ответ — нет.
+XPENDING s g
+~ XPENDING s g - + 10
+~ XPENDING s g - + 10 c1
+XPENDING s g - + 10 nosuchconsumer
+XPENDING nosuch g
+XACK s g 1-0
+XACK s g 1-0
+XACK nosuch g 1-0
+
+# --- перехват записей ---
+XCLAIM s g c2 0 2-0
+XCLAIM s g c2 0 3-0 JUSTID
+XCLAIM s g c2 0 9-0
+XCLAIM nosuch g c2 0 2-0
+XAUTOCLAIM s g c3 0 0
+XAUTOCLAIM s g c3 0 0 JUSTID
+XAUTOCLAIM nosuch g c3 0 0
+
+# --- состояние ---
+XINFO GROUPS s
+# Время простоя и время активности зависят от часов: ответ не сравнивается.
+~ XINFO CONSUMERS s g
+XINFO STREAM s
+XINFO STREAM nosuch
+XINFO CONSUMERS nosuch g

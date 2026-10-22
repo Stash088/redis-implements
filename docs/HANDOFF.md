@@ -7,15 +7,15 @@
 
 | | |
 |---|---|
-| Покрытие команд | **169 из 267** команд Redis 8.2 (63 %) — все 169 совпадают с реальными командами Redis |
-| Веток/MR | 17 draft-MR, стек друг на друга (см. §2) |
+| Покрытие команд | **177 из 267** команд Redis 8.2 (66 %) — все 177 совпадают с реальными командами Redis |
+| Веток/MR | 18 draft-MR, стек друг на друга (см. §2) |
 | Производительность | паритет с Redis 8.2 под пайплайном (0.97–1.06×), 0.84–0.90× на одиночных командах |
-| Сверка с Redis | харнесс `cmd/compat-check`: **все 8 сценариев совпадают** с настоящим Redis 8.2 |
+| Сверка с Redis | харнесс `cmd/compat-check`: **все 9 сценариев совпадают** с настоящим Redis 8.2 |
 | Тесты | `go test -race ./...` — зелёный и стабильный при `-count=3` |
 
-Реализованные вехи: M0, M1, M3, M4, M5, M6, M9–M19.
-Не сделано: M2 (шардирование — отложено осознанно), M20–M23 (группы потоков,
-персистентность стримов, репликация).
+Реализованные вехи: M0, M1, M3, M4, M5, M6, M9–M20.
+Не сделано: M2 (шардирование — отложено осознанно), M21–M23 (персистентность
+стримов, репликация).
 
 ## 2. Ветки и MR
 
@@ -40,6 +40,7 @@
 | !15 | `feat/m17-blocking-commands` | `feat/m16-key-management` | M17 — блокирующие команды |
 | !16 | `feat/m18-compat-harness` | `feat/m17-blocking-commands` | M18 — харнесс сверки |
 | !17 | `feat/m19-streams` | `feat/m18-compat-harness` | M19 — Streams: модель данных |
+| !18 | `feat/m20-stream-groups` | `feat/m19-streams` | M20 — Streams: группы и чтение |
 
 ⚠️ **Важно про `main`**: удалённый `origin/main` на `72327ba` (Stage 7), а локальный
 `main` — на `537103b` (Stage 7 + Dockerfile + Stage 8). Коммиты Stage 8 и
@@ -49,20 +50,8 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 
 ## 3. Что делать дальше
 
-Порядок вех — в `docs/roadmap-m0-plus.md` (§ «M20–M23»), там же — детали по
+Порядок вех — в `docs/roadmap-m0-plus.md` (§ «M21–M23»), там же — детали по
 каждой вехе. Коротко:
-
-### M20 — Streams: группы и чтение
-- `XREAD` (блокирующий и нет), `XREADGROUP`, `XACK`, `XGROUP`
-  (`CREATE`/`DESTROY`/`CREATECONSUMER`/`DELCONSUMER`/`SETID`), `XINFO`,
-  `XPENDING`, `XAUTOCLAIM`.
-- Заблокированный `XREAD` переиспользует механизм ожидания из M17
-  (`internal/server/blocking.go`): регистрируем ожидание на ключе потока и
-  будим его командой `XADD`.
-- Модель данных готова (M19): `internal/store/stream.go` — `StreamID`,
-  `Stream`, `StreamEntry`, операции `StreamAdd`/`StreamRange`/`StreamDelete`/
-  `StreamTrim`/`StreamSetID`; разбор аргументов команд — `ParseStreamAddArgs`
-  и `ParseStreamTrimArgs` (ими же пользуется реплей AOF).
 
 ### M21 — Streams: персистентность (полная интероп-совместимость)
 - **listpack-энкодер** в `internal/persist` — сейчас есть только декодер
@@ -72,6 +61,13 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 - Интероп-тест: наш дамп со стримами читает настоящий `redis-server` 8.2.
 - Пока формата нет, `SAVE` пропускает ключи-потоки (предупреждение в лог),
   а `DUMP` потока возвращает ошибку — см. §4.
+- **Группы потребителей готовы** (M20): `internal/store/stream_group.go` —
+  `StreamGroup`, `StreamConsumer`, `StreamNack`; операции `StreamGroupRead`
+  (выдача записей и правка списка неподтверждённых), `StreamAck`,
+  `StreamClaim`, `StreamAutoClaim`, `StreamPendingInfo`, `StreamPendingRange`,
+  `StreamGroupsInfo`, `StreamConsumersInfo`; разбор аргументов `XGROUP` и
+  `XCLAIM` — `ParseStreamGroupArgs`/`ParseStreamClaimArgs` (ими же пользуется
+  реплей AOF).
 
 ### M22 — Репликация: каркас
 - `REPLICAOF`/`SLAVEOF`, `ROLE`, секция `replication` в `INFO`, `REPLCONF`
@@ -89,6 +85,7 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 | **Стримы не сохраняются в RDB** (формат стримов — в вехе M21) | `SAVE` пропускает ключи-потоки и пишет предупреждение в лог; AOF их сохраняет | `internal/persist/rdb.go` (`rdbEntries`), `internal/server/persist.go` |
 | `DUMP` потока возвращает ошибку | нет payload'а для стримов до M21 | `internal/server/commands_keys.go` |
 | Приблизительная обрезка (`XTRIM … ~`) удаляет целыми блоками по 100 записей | в Redis блоки — это узлы rax (до 100 записей и 4 КБ), у нас единого узла нет | `internal/store/stream.go` (`approximateCut`) |
+| `XINFO STREAM`: `radix-tree-keys`/`radix-tree-nodes` — приблизительные | эти поля описывают внутреннее устройство Redis (radix-дерево); у нас поток — это один срез | `internal/server/commands_stream_group.go` (`radixTreeKeys`) |
 | Нет команд с TTL полей хэша (`HEXPIRE`/`HTTL`/`HSETEX`) | требуют поддержки TTL полей в RDB, иначе данные терялись бы при сохранении | `docs/roadmap-m0-plus.md` (M11) |
 | `SORT` без `BY`/`GET` требует числовых элементов | как в Redis: иначе `ERR One or more scores can't be converted into double` | `internal/server/commands_keys.go` |
 | `SCAN`/`HSCAN`/… — курсор = индекс в отсортированный снимок | снимок строится заново на каждый вызов, O(n log n) | `internal/server/commands_scan.go` |
@@ -145,6 +142,28 @@ Dockerfile **не запушены в main**. Перед слиянием их �
     результат зависит от раскладки — у нас тоже (блоки по 100 записей);
   - в AOF попадает **фактический** идентификатор записи, а `~` переписывается
     в `=` с получившейся длиной — иначе реплей дал бы другой поток.
+- **Группы потребителей** (Redis 8.2):
+  - `XREADGROUP … >` отдаёт записи потока **после** идентификатора группы и
+    кладёт их в список неподтверждённых; `XREADGROUP … <id>` отдаёт
+    **собственные** неподтверждённые записи потребителя (и увеличивает число
+    доставок), а не записи потока;
+  - `XACK` на несуществующей группе/ключе → `0` (не ошибка), а `XPENDING`,
+    `XAUTOCLAIM`, `XINFO CONSUMERS` → ошибка `NOGROUP`;
+  - `XINFO GROUPS`: `entries-read` и `lag` — **null**, если счётчик группы
+    неизвестен (группа создана без `ENTRIESREAD` и ещё ничего не читала);
+  - в сводке `XPENDING` число неподтверждённых записей потребителя — **bulk
+    строка** (в Redis `addReplyBulkLongLong`), а не целое число: харнесс
+    сравнивает типы значений;
+  - `XINFO STREAM` без `FULL` — 10 пар, с `FULL` — 9 пар (поля потока, его
+    записи и группы); поля `radix-tree-keys`/`radix-tree-nodes` описывают
+    внутреннее устройство Redis, у нас они приблизительные (1 и 2 для
+    небольших потоков — совпадают);
+  - `XGROUP HELP` и `XINFO HELP` отвечают **массивом** строк (по строке на
+    элемент), а не одной строкой;
+  - `XGROUP` с несуществующим ключом → «ERR The XGROUP subcommand requires
+    the key to exist…», а с несуществующей группой → `NOGROUP`;
+  - приблизительная обрезка `XTRIM … ~` в Redis удаляет целые узлы rax, поэтому
+    её результат зависит от раскладки — у нас тоже (блоки по 100 записей).
 
 ## 6. Как проверять
 

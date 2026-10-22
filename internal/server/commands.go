@@ -226,6 +226,18 @@ func (s *Server) registerCommands() {
 	s.regW("XDEL", -3, cmdXDel)
 	s.regW("XTRIM", -4, cmdXTrim)
 	s.regW("XSETID", -3, cmdXSetID)
+
+	// Stream commands: the consumer groups and the reading. XREADGROUP
+	// propagates itself to the AOF, because the pending list of the group is
+	// written as a series of XCLAIM commands.
+	s.regW("XGROUP", -2, cmdXGroup)
+	s.regW("XACK", -4, cmdXAck)
+	s.regW("XCLAIM", -6, cmdXClaim)
+	s.regW("XAUTOCLAIM", -7, cmdXAutoClaim)
+	s.reg("XPENDING", -3, cmdXPending)
+	s.reg("XINFO", -2, cmdXInfo)
+	s.reg("XREAD", -4, cmdXRead)
+	s.regWS("XREADGROUP", -7, cmdXReadGroup)
 }
 
 // cmdSpec describes a single command: its handler and its metadata.

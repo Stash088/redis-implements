@@ -29,6 +29,7 @@ redis-implements/
     │   ├── skiplist.go             # zskiplist (как в Redis)
     │   ├── zset.go                 # ZSET: dict + skiplist + store-операции
     │   ├── stream.go               # STREAM: записи с id ms-seq + операции (M19)
+    │   ├── stream_group.go         # STREAM: группы потребителей и PEL (M20)
     │   ├── expiry.go               # Expirer — активная очистка (фоновый тикер)
     │   ├── watch.go                # WATCH/CAS реестр наблюдателей (этап 8)
     │   ├── evict.go                # maxmemory eviction + учёт памяти (этап 8)
@@ -53,6 +54,8 @@ redis-implements/
     │   ├── commands_set.go
     │   ├── commands_zset.go
     │   ├── commands_stream.go      # XADD/XLEN/XRANGE/XREVRANGE/XDEL/XTRIM/XSETID (M19)
+    │   ├── commands_stream_group.go # XGROUP/XACK/XCLAIM/XAUTOCLAIM/XPENDING/XINFO (M20)
+    │   ├── commands_stream_read.go  # XREAD/XREADGROUP, в т.ч. блокирующие (M20)
     │   ├── server_test.go          # integration-тесты (клиент-хелпер)
     │   ├── commands_pubsub_test.go
     │   ├── commands_transaction_test.go
@@ -179,8 +182,7 @@ redis-implements/
 - [ ] Репликация master→replica (PSYNC, RDB-передача, failover)
 - [ ] Кластер/шардирование (hash slots, routing)
 - [ ] Lua-скриптинг (EVAL)
-- [ ] Streams: группы потребителей и чтение (`XREAD`/`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`)
-      — модель данных сделана в вехе **M19**
+- [ ] Streams: группы потребителей и чтение — сделано в вехе **M20**
 - [ ] TLS, Unix-сокеты, модули
 
 ### 🚀 Развитие после этапа 8 — вехи M0+
@@ -212,7 +214,7 @@ redis-implements/
 | M17 | Блокирующие команды: `BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX` | ✅ |
 | M18 | Харнесс сверки с настоящим Redis (`cmd/compat-check` + `testdata/compat`) | ✅ |
 | M19 | Streams: модель данных (`XADD`, `XLEN`, `XRANGE`, `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID`) | ✅ |
-| M20 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
+| M20 | Streams: группы и чтение (`XGROUP`, `XREAD`/`XREADGROUP`, `XACK`, `XCLAIM`, `XAUTOCLAIM`, `XPENDING`, `XINFO`) | ✅ |
 | M21 | Streams: персистентность (RDB-энкодинг с полной интероп-совместимостью, AOF) | ⏳ |
 | M22 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |
 | M23 | Репликация: инкрементальная синхронизация (`WAIT`, partial resync) | ⏳ |
