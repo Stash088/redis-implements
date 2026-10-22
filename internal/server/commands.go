@@ -107,6 +107,16 @@ func (s *Server) registerCommands() {
 	// Protocol negotiation.
 	s.reg("HELLO", -1, cmdHello)
 
+	// Sorted set commands (second batch).
+	s.regWG("ZINCRBY", 4, cmdZIncrBy)
+	s.reg("ZCOUNT", 4, cmdZCount)
+	s.reg("ZMSCORE", -3, cmdZMScore)
+	s.reg("ZRANGEBYSCORE", -4, cmdZRangeByScore)
+	s.reg("ZREVRANGEBYSCORE", -4, cmdZRevRangeByScore)
+	s.reg("ZRANGEBYLEX", -4, cmdZRangeByLex)
+	s.reg("ZREVRANGEBYLEX", -4, cmdZRevRangeByLex)
+	s.reg("ZLEXCOUNT", 4, cmdZLexCount)
+
 	// List commands (second batch).
 	s.regW("LINSERT", 5, cmdLInsert)
 	s.regW("LREM", 4, cmdLRem)

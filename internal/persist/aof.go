@@ -508,6 +508,13 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		st.SetAdd(key(), args[2:]...)
 	case "srem":
 		st.SetRem(key(), args[2:]...)
+	case "zincrby":
+		// ZINCRBY key increment member
+		if len(args) == 4 {
+			if d, err := strconv.ParseFloat(string(args[2]), 64); err == nil {
+				st.ZIncrBy(key(), d, args[3]) //nolint:errcheck
+			}
+		}
 	case "zadd":
 		if len(args) >= 4 && len(args)%2 == 0 {
 			for i := 2; i+1 < len(args); i += 2 {

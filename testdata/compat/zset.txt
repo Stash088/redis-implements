@@ -1,0 +1,47 @@
+# Сценарий сверки: команды отсортированных множеств, score/lex-семейство.
+
+# --- подготовка ---
+ZADD z 1 a 2 b 3 c 4 d 5 e
+ZADD z 2 aa 2 bb
+ZADD lex 0 a 0 aa 0 b 0 bb 0 c
+
+# --- инкременты и чтение ---
+ZINCRBY z 1.5 a
+ZSCORE z a
+ZCOUNT z 2 4
+ZCOUNT z (2 +inf
+ZCOUNT z -inf +inf
+ZMSCORE z a b nosuch
+ZLEXCOUNT lex [a [b
+ZLEXCOUNT lex - +
+
+# --- диапазоны по score ---
+ZRANGEBYSCORE z 2 4
+ZRANGEBYSCORE z (2 4
+ZRANGEBYSCORE z 2 3 WITHSCORES
+ZRANGEBYSCORE z 1 5 LIMIT 1 2
+ZRANGEBYSCORE z 1 5 LIMIT 0 3
+ZREVRANGEBYSCORE z 4 2
+ZREVRANGEBYSCORE z 4 2 WITHSCORES
+
+# --- диапазоны по ZRANGE с опциями ---
+ZRANGE z 2 4 BYSCORE
+ZRANGE z 4 2 BYSCORE REV
+ZRANGE z 0 2 REV
+ZRANGE z 0 2
+ZRANGE z 2 4 BYSCORE LIMIT 1 2
+
+# --- диапазоны по lex ---
+ZRANGEBYLEX lex [a (c
+ZRANGEBYLEX lex [a (c LIMIT 1 2
+ZREVRANGEBYLEX lex (c [a
+ZRANGE lex [a (c BYLEX
+ZRANGE lex (c [a BYLEX REV
+
+# --- ошибки ---
+ZCOUNT z bad 4
+ZCOUNT z 1 bad
+ZRANGEBYLEX lex a b
+ZLEXCOUNT lex a b
+ZRANGEBYSCORE z 1
+ZINCRBY z notafloat m
