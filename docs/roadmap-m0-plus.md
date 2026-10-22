@@ -146,9 +146,14 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
 - [x] Попутно исправлено: `GETRANGE`/`GETSET`/`GETDEL`/`GETEX` на ключе
       другого типа возвращали nil вместо `WRONGTYPE`.
 
-### ⏳ M10 — Инкрементальные обходы
+### ✅ M10 — Инкрементальные обходы
 
-- [ ] `HSCAN`, `SSCAN`, `ZSCAN` (курсор + `MATCH`/`COUNT`/`TYPE`).
+- [x] `HSCAN`, `SSCAN`, `ZSCAN` (курсор + `MATCH`/`COUNT`, `NOVALUES` только у
+      `HSCAN` — как в Redis). Логика курсора вынесена из `SCAN` в общие
+      помощники (`parseScanOptions`, `scanRange`).
+- [x] Хранилище: `ScanHash`, `ScanSet`, `ScanZSet` — члены под read-локом,
+      для хэша и множества отсортированы, для zset — по score.
+- [x] Сценарий сверки `testdata/compat/scan.txt` (данные для харнесса M18).
 
 ### ⏳ M11 — Hash v2
 

@@ -40,55 +40,20 @@ func cmdScan(ctx *Ctx) error {
 		wrongArgs(ctx.W, "scan")
 		return nil
 	}
-	cursor, err := strconv.ParseUint(string(ctx.Args[1]), 10, 64)
-	if err != nil {
-		return ctx.W.WriteError("ERR invalid cursor")
-	}
-	count := 10
-	pattern := ""
-	for i := 2; i < len(ctx.Args); i++ {
-		switch strings.ToUpper(string(ctx.Args[i])) {
-		case "MATCH":
-			if i+1 >= len(ctx.Args) {
-				return ctx.W.WriteError("ERR syntax error")
-			}
-			pattern = string(ctx.Args[i+1])
-			i++
-		case "COUNT":
-			if i+1 >= len(ctx.Args) {
-				return ctx.W.WriteError("ERR syntax error")
-			}
-			n, err := strconv.Atoi(string(ctx.Args[i+1]))
-			if err != nil || n <= 0 {
-				return ctx.W.WriteError("ERR COUNT must be a positive integer")
-			}
-			count = n
-			i++
-		default:
-			return ctx.W.WriteError("ERR syntax error")
-		}
+	opts, ok := parseScanOptions(ctx, "scan", ctx.Args[1:], false)
+	if !ok {
+		return nil
 	}
 
-	// Cursor indexes a sorted snapshot of live keys: full coverage with no
+	// The cursor indexes a sorted snapshot of live keys: full coverage with no
 	// duplicates (a superset of Redis's guarantees, which allow both).
 	keys := ctx.Store.Keys()
 	sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
-	start := cursor
-	if start > uint64(len(keys)) {
-		start = uint64(len(keys))
-	}
-	end := start + uint64(count)
-	if end > uint64(len(keys)) {
-		end = uint64(len(keys))
-	}
-	next := end
-	if next == uint64(len(keys)) {
-		next = 0
-	}
+	start, end, next := scanRange(len(keys), opts)
 
 	var matched [][]byte
 	for _, k := range keys[start:end] {
-		if pattern == "" || globMatch(pattern, string(k)) {
+		if opts.pattern == "" || globMatch(opts.pattern, string(k)) {
 			matched = append(matched, k)
 		}
 	}
