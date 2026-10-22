@@ -178,6 +178,19 @@ func (s *Server) registerCommands() {
 	s.reg("SETRANGE", 4, cmdSetRange)
 	s.regWG("INCRBYFLOAT", 3, cmdIncrByFloat)
 
+	// Key management commands.
+	s.regW("RENAME", 3, cmdRename)
+	s.regW("RENAMENX", 3, cmdRenameNX)
+	s.regW("COPY", -3, cmdCopy)
+	s.regW("MOVE", 3, cmdMove)
+	s.reg("DUMP", 2, cmdDump)
+	s.regW("RESTORE", -4, cmdRestore)
+	s.reg("EXPIRETIME", 2, cmdExpireTime)
+	s.reg("PEXPIRETIME", 2, cmdPExpireTime)
+	s.regW("SWAPDB", 3, cmdSwapDB)
+	s.reg("OBJECT", -2, cmdObject)
+	s.reg("SORT", -2, cmdSort)
+
 	// Administration commands.
 	s.reg("COMMAND", -1, cmdCommand)
 	s.reg("RESET", 1, cmdReset)
@@ -408,6 +421,10 @@ func ttlCommon(ctx *Ctx, cmd string, unit time.Duration) error {
 	}
 	if d < 0 {
 		return ctx.W.WriteInteger(-1)
+	}
+	if unit == time.Second {
+		// Redis rounds the remaining time to the nearest second.
+		return ctx.W.WriteInteger(int64((d + 500*time.Millisecond) / time.Second))
 	}
 	return ctx.W.WriteInteger(int64(d / unit))
 }

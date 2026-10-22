@@ -1,0 +1,59 @@
+# Сценарий сверки: управление ключами.
+
+# --- подготовка ---
+SET k v
+RPUSH l a b c
+HSET h f v
+
+# --- переименование ---
+RENAME k k2
+GET k2
+RENAME nosuchkey x
+RENAMENX k2 k3
+RENAMENX k3 k2
+GET k2
+
+# --- копирование и перенос ---
+COPY k2 c1
+GET c1
+COPY k2 c1
+COPY k2 c1 REPLACE
+COPY k2 c2 DB 1
+COPY k2 c3 DB 99
+MOVE c1 1
+MOVE c1 1
+MOVE c1 0
+
+# --- сериализация ---
+DUMP l
+DUMP nosuchkey
+
+# --- сроки жизни ---
+EXPIRETIME k2
+PEXPIRETIME k2
+EXPIRETIME nosuchkey
+SET tmp v EX 100
+EXPIRETIME tmp
+PEXPIRETIME tmp
+
+# --- базы данных ---
+SWAPDB 0 1
+SWAPDB 0 99
+
+# --- кодировка ---
+OBJECT ENCODING l
+OBJECT ENCODING h
+OBJECT ENCODING nosuchkey
+OBJECT HELP
+
+# --- сортировка ---
+SORT l
+SORT l ALPHA
+SORT l ALPHA DESC
+SORT l ALPHA LIMIT 0 2
+RPUSH nums 3 1 2
+SORT nums
+SORT nums DESC
+SORT nums STORE sorted
+LRANGE sorted 0 -1
+SORT nums BY w_*

@@ -264,7 +264,9 @@ func TestPersistenceAOFExpiryRewrite(t *testing.T) {
 	if v := c2.bulkWant("GET", "k"); string(v) != "v" {
 		t.Fatalf("k = %q", v)
 	}
-	if v := c2.cmd("TTL", "k"); v.Kind != resp.KindInteger || v.Int <= 0 || v.Int >= 5 {
+	// The TTL is rounded to the nearest second, like in Redis, so it is
+	// still 5 after 200 ms.
+	if v := c2.cmd("TTL", "k"); v.Kind != resp.KindInteger || v.Int <= 0 || v.Int > 5 {
 		t.Errorf("TTL should be ~5s minus elapsed, got %v", v)
 	}
 }

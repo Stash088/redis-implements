@@ -356,191 +356,9 @@ func (d *rdbDecoder) keyValue(op byte) error {
 	if err != nil {
 		return err
 	}
-	e := &store.Entry{ExpiresAt: d.exp}
-	d.exp = time.Time{}
-	switch op {
-	case rdbTypeString:
-		e.Type = store.TypeString
-		if e.Str, err = d.readString(); err != nil {
-			return err
-		}
-	case rdbTypeList:
-		e.Type = store.TypeList
-		n, err := d.readLen()
-		if err != nil {
-			return err
-		}
-		l := store.NewList()
-		for i := uint64(0); i < n; i++ {
-			v, err := d.readString()
-			if err != nil {
-				return err
-			}
-			l.PushBack(v)
-		}
-		e.List = l
-	case rdbTypeSet:
-		e.Type = store.TypeSet
-		n, err := d.readLen()
-		if err != nil {
-			return err
-		}
-		set := make(map[string]struct{}, n)
-		for i := uint64(0); i < n; i++ {
-			v, err := d.readString()
-			if err != nil {
-				return err
-			}
-			set[string(v)] = struct{}{}
-		}
-		e.Set = set
-	case rdbTypeHash:
-		e.Type = store.TypeHash
-		n, err := d.readLen()
-		if err != nil {
-			return err
-		}
-		h := make(map[string][]byte, n)
-		for i := uint64(0); i < n; i++ {
-			f, err := d.readString()
-			if err != nil {
-				return err
-			}
-			v, err := d.readString()
-			if err != nil {
-				return err
-			}
-			h[string(f)] = v
-		}
-		e.Hash = h
-	case rdbTypeZSet, rdbTypeZSet2:
-		e.Type = store.TypeZSet
-		n, err := d.readLen()
-		if err != nil {
-			return err
-		}
-		z := store.NewZSet()
-		for i := uint64(0); i < n; i++ {
-			m, err := d.readString()
-			if err != nil {
-				return err
-			}
-			var score float64
-			if op == rdbTypeZSet2 {
-				var s [8]byte
-				if err := d.read(s[:]); err != nil {
-					return err
-				}
-				score = math.Float64frombits(binary.LittleEndian.Uint64(s[:]))
-			} else {
-				sv, err := d.readString()
-				if err != nil {
-					return err
-				}
-				score, err = parseFloatBytes(sv)
-				if err != nil {
-					return fmt.Errorf("persist: bad zset score: %w", err)
-				}
-			}
-			z.Add(score, m)
-		}
-		e.ZSet = z
-	case rdbTypeHashListpack:
-		e.Type = store.TypeHash
-		buf, err := d.readString()
-		if err != nil {
-			return err
-		}
-		elems, err := decodeListpack(buf)
-		if err != nil {
-			return err
-		}
-		if len(elems)%2 != 0 {
-			return fmt.Errorf("persist: hash listpack has odd element count")
-		}
-		h := make(map[string][]byte, len(elems)/2)
-		for i := 0; i < len(elems); i += 2 {
-			h[string(elems[i])] = elems[i+1]
-		}
-		e.Hash = h
-	case rdbTypeSetListpack:
-		e.Type = store.TypeSet
-		buf, err := d.readString()
-		if err != nil {
-			return err
-		}
-		elems, err := decodeListpack(buf)
-		if err != nil {
-			return err
-		}
-		set := make(map[string]struct{}, len(elems))
-		for _, m := range elems {
-			set[string(m)] = struct{}{}
-		}
-		e.Set = set
-	case rdbTypeZSetListpack:
-		e.Type = store.TypeZSet
-		buf, err := d.readString()
-		if err != nil {
-			return err
-		}
-		elems, err := decodeListpack(buf)
-		if err != nil {
-			return err
-		}
-		if len(elems)%2 != 0 {
-			return fmt.Errorf("persist: zset listpack has odd element count")
-		}
-		z := store.NewZSet()
-		for i := 0; i < len(elems); i += 2 {
-			score, err := parseFloatBytes(elems[i+1])
-			if err != nil {
-				return fmt.Errorf("persist: bad zset score: %w", err)
-			}
-			z.Add(score, elems[i])
-		}
-		e.ZSet = z
-	case rdbTypeListQuicklist2:
-		e.Type = store.TypeList
-		nodes, err := d.readLen()
-		if err != nil {
-			return err
-		}
-		l := store.NewList()
-		for i := uint64(0); i < nodes; i++ {
-			container, err := d.readLen()
-			if err != nil {
-				return err
-			}
-			switch container {
-			case quicklistNodePlain: // a single plain element
-				v, err := d.readString()
-				if err != nil {
-					return err
-				}
-				l.PushBack(v)
-			case quicklistNodePacked: // a listpack node
-				node, err := d.readString()
-				if err != nil {
-					return err
-				}
-				elems, err := decodeListpack(node)
-				if err != nil {
-					return err
-				}
-				for _, v := range elems {
-					l.PushBack(v)
-				}
-			default:
-				return fmt.Errorf("persist: unknown quicklist node container %d", container)
-			}
-		}
-		e.List = l
-	case rdbTypeSetIntset, rdbTypeHashZiplist, rdbTypeZSetZiplist, rdbTypeListZiplist, rdbTypeListQuicklist,
-		rdbTypeHashMetadata, rdbTypeHashListpackEx:
-		return fmt.Errorf("persist: RDB type %d (ziplist/intset/hash-TTL) is not supported", op)
-	default:
-		return fmt.Errorf("persist: unsupported RDB value type %d", op)
+	e, err := d.readValue(op)
+	if err != nil {
+		return err
 	}
 	st := d.store()
 	if st == nil {
@@ -553,6 +371,198 @@ func (d *rdbDecoder) keyValue(op byte) error {
 	}
 	st.RestoreEntry(string(key), e)
 	return nil
+}
+
+// readValue reads the value of a key-value pair of the given type.
+func (d *rdbDecoder) readValue(op byte) (*store.Entry, error) {
+	e := &store.Entry{ExpiresAt: d.exp}
+	d.exp = time.Time{}
+	var err error
+	switch op {
+	case rdbTypeString:
+		e.Type = store.TypeString
+		if e.Str, err = d.readString(); err != nil {
+			return nil, err
+		}
+	case rdbTypeList:
+		e.Type = store.TypeList
+		n, err := d.readLen()
+		if err != nil {
+			return nil, err
+		}
+		l := store.NewList()
+		for i := uint64(0); i < n; i++ {
+			v, err := d.readString()
+			if err != nil {
+				return nil, err
+			}
+			l.PushBack(v)
+		}
+		e.List = l
+	case rdbTypeSet:
+		e.Type = store.TypeSet
+		n, err := d.readLen()
+		if err != nil {
+			return nil, err
+		}
+		set := make(map[string]struct{}, n)
+		for i := uint64(0); i < n; i++ {
+			v, err := d.readString()
+			if err != nil {
+				return nil, err
+			}
+			set[string(v)] = struct{}{}
+		}
+		e.Set = set
+	case rdbTypeHash:
+		e.Type = store.TypeHash
+		n, err := d.readLen()
+		if err != nil {
+			return nil, err
+		}
+		h := make(map[string][]byte, n)
+		for i := uint64(0); i < n; i++ {
+			f, err := d.readString()
+			if err != nil {
+				return nil, err
+			}
+			v, err := d.readString()
+			if err != nil {
+				return nil, err
+			}
+			h[string(f)] = v
+		}
+		e.Hash = h
+	case rdbTypeZSet, rdbTypeZSet2:
+		e.Type = store.TypeZSet
+		n, err := d.readLen()
+		if err != nil {
+			return nil, err
+		}
+		z := store.NewZSet()
+		for i := uint64(0); i < n; i++ {
+			m, err := d.readString()
+			if err != nil {
+				return nil, err
+			}
+			var score float64
+			if op == rdbTypeZSet2 {
+				var s [8]byte
+				if err := d.read(s[:]); err != nil {
+					return nil, err
+				}
+				score = math.Float64frombits(binary.LittleEndian.Uint64(s[:]))
+			} else {
+				sv, err := d.readString()
+				if err != nil {
+					return nil, err
+				}
+				score, err = parseFloatBytes(sv)
+				if err != nil {
+					return nil, fmt.Errorf("persist: bad zset score: %w", err)
+				}
+			}
+			z.Add(score, m)
+		}
+		e.ZSet = z
+	case rdbTypeHashListpack:
+		e.Type = store.TypeHash
+		buf, err := d.readString()
+		if err != nil {
+			return nil, err
+		}
+		elems, err := decodeListpack(buf)
+		if err != nil {
+			return nil, err
+		}
+		if len(elems)%2 != 0 {
+			return nil, fmt.Errorf("persist: hash listpack has odd element count")
+		}
+		h := make(map[string][]byte, len(elems)/2)
+		for i := 0; i < len(elems); i += 2 {
+			h[string(elems[i])] = elems[i+1]
+		}
+		e.Hash = h
+	case rdbTypeSetListpack:
+		e.Type = store.TypeSet
+		buf, err := d.readString()
+		if err != nil {
+			return nil, err
+		}
+		elems, err := decodeListpack(buf)
+		if err != nil {
+			return nil, err
+		}
+		set := make(map[string]struct{}, len(elems))
+		for _, m := range elems {
+			set[string(m)] = struct{}{}
+		}
+		e.Set = set
+	case rdbTypeZSetListpack:
+		e.Type = store.TypeZSet
+		buf, err := d.readString()
+		if err != nil {
+			return nil, err
+		}
+		elems, err := decodeListpack(buf)
+		if err != nil {
+			return nil, err
+		}
+		if len(elems)%2 != 0 {
+			return nil, fmt.Errorf("persist: zset listpack has odd element count")
+		}
+		z := store.NewZSet()
+		for i := 0; i < len(elems); i += 2 {
+			score, err := parseFloatBytes(elems[i+1])
+			if err != nil {
+				return nil, fmt.Errorf("persist: bad zset score: %w", err)
+			}
+			z.Add(score, elems[i])
+		}
+		e.ZSet = z
+	case rdbTypeListQuicklist2:
+		e.Type = store.TypeList
+		nodes, err := d.readLen()
+		if err != nil {
+			return nil, err
+		}
+		l := store.NewList()
+		for i := uint64(0); i < nodes; i++ {
+			container, err := d.readLen()
+			if err != nil {
+				return nil, err
+			}
+			switch container {
+			case quicklistNodePlain: // a single plain element
+				v, err := d.readString()
+				if err != nil {
+					return nil, err
+				}
+				l.PushBack(v)
+			case quicklistNodePacked: // a listpack node
+				node, err := d.readString()
+				if err != nil {
+					return nil, err
+				}
+				elems, err := decodeListpack(node)
+				if err != nil {
+					return nil, err
+				}
+				for _, v := range elems {
+					l.PushBack(v)
+				}
+			default:
+				return nil, fmt.Errorf("persist: unknown quicklist node container %d", container)
+			}
+		}
+		e.List = l
+	case rdbTypeSetIntset, rdbTypeHashZiplist, rdbTypeZSetZiplist, rdbTypeListZiplist, rdbTypeListQuicklist,
+		rdbTypeHashMetadata, rdbTypeHashListpackEx:
+		return nil, fmt.Errorf("persist: RDB type %d (ziplist/intset/hash-TTL) is not supported", op)
+	default:
+		return nil, fmt.Errorf("persist: unsupported RDB value type %d", op)
+	}
+	return e, nil
 }
 
 // checksum verifies the trailing CRC64. A stored checksum of 0 means the file
