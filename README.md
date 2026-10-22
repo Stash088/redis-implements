@@ -25,7 +25,10 @@
 - **Диагностика** — `KEYS`/`SCAN` (курсор + `MATCH`/`COUNT`), `CONFIG GET/SET`, `CLIENT ID/LIST/SETNAME/GETNAME`,
   `SLOWLOG GET/LEN/RESET` с настраиваемым порогом.
 - **Конкурентность** — горутина на каждое соединение + `RWMutex` на хранилище; все тесты гоняются с `-race`.
-- **Совместимость** — проверена работа с настоящим `redis-cli` и `redis-benchmark`.
+- **Аутентификация** — `--requirepass` и команда `AUTH` (`AUTH user pass`): без
+  пароля любой, кто достучился до порта, управляет сервером.
+- **Совместимость** — проверена работа с настоящим `redis-cli`, `redis-benchmark`
+  и клиентом `redis-py` (в том числе в режиме RESP3).
 
 ## Быстрый старт
 
@@ -44,6 +47,9 @@ go run ./cmd/redis-server --databases 4
 
 # С ограничением памяти и eviction
 go run ./cmd/redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+# С паролем (клиент подключается с redis-cli -a <пароль>)
+go run ./cmd/redis-server --requirepass mysecret
 ```
 
 Проверка с настоящим клиентом:
@@ -107,10 +113,11 @@ redis-cli -h <VPS_IP> GET survived       # 1
 и аккуратно закрывается AOF. Healthcheck (`docker inspect ... .State.Health.Status`) шлёт
 RESP `PING` через busybox `nc`.
 
-> **Безопасность:** команды `AUTH`/`requirepass` в реализации нет — любой, кто достучится до порта
-> 6379, управляет сервером. Не публикуйте порт наружу без ограничений. Варианты: SSH-туннель
-> (`ssh -L 6379:127.0.0.1:6379 user@VPS`) либо firewall только для вашего IP
-> (`sudo ufw allow from <ваш_IP> to any port 6379`).
+> **Безопасность:** аутентификация включается флагом `--requirepass <пароль>`
+> (или `CONFIG SET requirepass`). Без него любой, кто достучится до порта 6379,
+> управляет сервером. Не публикуйте порт наружу без ограничений. Варианты:
+> SSH-туннель (`ssh -L 6379:127.0.0.1:6379 user@VPS`), firewall только для
+> вашего IP (`sudo ufw allow from <ваш_IP> to any port 6379`) и `--requirepass`.
 
 ## Поддерживаемые команды
 
@@ -118,6 +125,7 @@ RESP `PING` через busybox `nc`.
 |---|---|
 | Общие | `PING`, `ECHO`, `QUIT`, `DEL`, `EXISTS`, `TYPE`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`, `INFO` |
 | Протокол | `HELLO` |
+| Аутентификация | `AUTH` |
 | Базы данных | `SELECT` |
 | Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `KEYS`, `SCAN` (MATCH/COUNT) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |

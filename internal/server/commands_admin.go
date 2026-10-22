@@ -145,6 +145,7 @@ func (s *Server) configParams() [][2]string {
 		{"port", strconv.Itoa(portOf(s.ln.Addr()))},
 		{"slowlog-log-slower-than", strconv.FormatInt(thresh, 10)},
 		{"slowlog-max-len", strconv.Itoa(maxLen)},
+		{"requirepass", s.requirePass()},
 	}
 }
 
@@ -229,6 +230,9 @@ func configSet(ctx *Ctx, args [][]byte) error {
 			thresh, maxLen := s.sl.config()
 			s.sl.setConfig(n, maxLen)
 			_ = thresh
+		case "requirepass":
+			// An empty password disables authentication.
+			s.SetRequirePass(value)
 		default:
 			return ctx.W.WriteError("ERR Unsupported CONFIG parameter: " + name)
 		}

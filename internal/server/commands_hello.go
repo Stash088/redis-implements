@@ -2,6 +2,7 @@ package server
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/amir/redis-implements/internal/resp"
 )
@@ -17,20 +18,36 @@ const serverVersion = "1.0.0"
 func cmdHello(ctx *Ctx) error {
 	c := ctx.Client
 	proto := 2
-	if len(ctx.Args) > 1 {
-		n, err := strconv.Atoi(string(ctx.Args[1]))
-		if err != nil {
-			return ctx.W.WriteError("ERR Protocol error: invalid version specified")
+	args := ctx.Args[1:]
+	if len(args) > 0 {
+		if n, err := strconv.Atoi(string(args[0])); err == nil {
+			if n < 2 || n > 3 {
+				return ctx.W.WriteError("NOPROTO unsupported protocol version")
+			}
+			proto = n
+			args = args[1:]
 		}
-		if n < 2 || n > 3 {
-			return ctx.W.WriteError("NOPROTO unsupported protocol version")
-		}
-		proto = n
 	}
-	// The remaining arguments (AUTH, SETNAME) are handled by their own
-	// commands; they are accepted here for protocol compatibility.
-	if len(ctx.Args) > 2 {
-		return ctx.W.WriteError("ERR Protocol error: unexpected argument type")
+	// The optional AUTH and SETNAME arguments, like Redis accepts.
+	for len(args) > 0 {
+		switch strings.ToLower(string(args[0])) {
+		case "auth":
+			if len(args) < 3 {
+				return ctx.W.WriteError("ERR Protocol error: unexpected argument type")
+			}
+			if err := ctx.Srv.authenticate(c, string(args[1]), string(args[2])); err != nil {
+				return ctx.W.WriteError(err.Error())
+			}
+			args = args[3:]
+		case "setname":
+			if len(args) < 2 {
+				return ctx.W.WriteError("ERR Protocol error: unexpected argument type")
+			}
+			c.setName(string(args[1]))
+			args = args[2:]
+		default:
+			return ctx.W.WriteError("ERR Protocol error: unexpected argument type")
+		}
 	}
 	c.proto.Store(int32(proto))
 

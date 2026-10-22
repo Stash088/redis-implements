@@ -65,6 +65,9 @@ type Server struct {
 	// Slow log.
 	sl *slowlog
 
+	// Password clients must authenticate with (empty disables it).
+	requirepass atomic.Pointer[string]
+
 	// Server metadata for INFO/CONFIG (set at startup, read-only afterwards).
 	appendFsync string
 	saveSeconds int
@@ -381,6 +384,10 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 
 func (s *Server) dispatch(ctx *Ctx) error {
 	name := strings.ToLower(string(ctx.Args[0]))
+	// Without authentication only a few commands are allowed.
+	if s.authRequired() && ctx.Client != nil && !ctx.Client.authenticated && !authExempt[name] {
+		return ctx.W.WriteError(noAuthError)
+	}
 	if ctx.Client != nil && ctx.Client.subscribed() && !allowedInSubscribeMode[name] {
 		return ctx.W.WriteError("ERR Can't execute '" + name + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")
 	}

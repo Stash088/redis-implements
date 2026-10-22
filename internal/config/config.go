@@ -33,6 +33,9 @@ type Config struct {
 
 	// Databases: how many keyspaces the server offers (Redis default: 16).
 	Databases int
+
+	// RequirePass is the password clients must authenticate with.
+	RequirePass string
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -110,6 +113,7 @@ func Parse(args []string) (Config, error) {
 	fs.Int64Var(&c.SlowlogSlowerThan, "slowlog-log-slower-than", c.SlowlogSlowerThan, "log commands slower than this many microseconds (-1 disables)")
 	fs.IntVar(&c.SlowlogMaxLen, "slowlog-max-len", c.SlowlogMaxLen, "number of slow log entries to keep")
 	fs.IntVar(&c.Databases, "databases", c.Databases, "number of keyspaces (databases)")
+	fs.StringVar(&c.RequirePass, "requirepass", c.RequirePass, "password clients must authenticate with (empty disables it)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
