@@ -24,6 +24,13 @@ func (s *Store) ForEach(fn func(key string, e *Entry) error) error {
 func (s *Store) RestoreEntry(key string, e *Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	cost := s.entryCostLocked(key, e)
+	if old, ok := s.data[key]; ok {
+		s.usedBytes -= old.cost
+	}
+	e.cost = cost
+	e.lastAccess.Store(s.clock().UnixNano())
+	s.usedBytes += cost
 	s.data[key] = e
 }
 

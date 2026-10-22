@@ -11,6 +11,8 @@ import (
 // least changes modifications happened within the last seconds. It is a no-op
 // when seconds <= 0 or no RDB path is configured.
 func (s *Server) StartSavePolicy(seconds, changes int) {
+	s.saveSeconds = seconds
+	s.saveChanges = changes
 	if seconds <= 0 || s.DBPath == "" {
 		return
 	}
@@ -44,6 +46,24 @@ func (s *Server) saveRDB() error {
 		return nil
 	}
 	return persist.Save(s.DBPath, s.Store)
+}
+
+// Shutdown performs a final RDB save (if changes are pending) and closes the
+// server: save policy, expirer, AOF and the listener. It is used for graceful
+// container shutdown; closing the listener makes Serve return.
+func (s *Server) Shutdown() error {
+	if s.DBPath != "" && s.dirty.Load() > 0 {
+		s.saveMu.Lock()
+		err := s.saveRDB()
+		s.saveMu.Unlock()
+		if err != nil {
+			s.Logger.Printf("server: shutdown save: %v", err)
+		} else {
+			s.dirty.Store(0)
+			s.lastSave.Store(time.Now().Unix())
+		}
+	}
+	return s.Close()
 }
 
 func cmdSave(ctx *Ctx) error {

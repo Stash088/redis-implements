@@ -93,6 +93,13 @@ func (w *Writer) WriteNullArray() error {
 	return nil
 }
 
+// WriteRaw writes pre-encoded RESP bytes directly to the buffer. It is used
+// to splice responses (e.g. EXEC array elements) produced by other writers.
+func (w *Writer) WriteRaw(b []byte) error {
+	_, err := w.bw.Write(b)
+	return err
+}
+
 // WriteArrayHeader writes the header "*N\r\n" of an array. Elements must be
 // written next.
 func (w *Writer) WriteArrayHeader(n int) error {

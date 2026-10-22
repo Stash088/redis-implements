@@ -85,3 +85,64 @@ func TestParseDefaultsPersistence(t *testing.T) {
 		t.Errorf("defaults: %+v", c)
 	}
 }
+
+func TestParseBytes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"0", 0},
+		{"1024", 1024},
+		{"1k", 1 << 10},
+		{"5kb", 5 << 10},
+		{"2m", 2 << 20},
+		{"3mb", 3 << 20},
+		{"1g", 1 << 30},
+		{"10gb", 10 << 30},
+		{"1B", 1},
+		{" 4 KB ", 4 << 10},
+	}
+	for _, tc := range cases {
+		got, err := ParseBytes(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("ParseBytes(%q) = %d, %v; want %d", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{"", "abc", "-5", "1kbx"} {
+		if _, err := ParseBytes(bad); err == nil {
+			t.Errorf("ParseBytes(%q): expected error", bad)
+		}
+	}
+}
+
+func TestParseMemoryFlags(t *testing.T) {
+	c, err := Parse([]string{
+		"--maxmemory", "100mb", "--maxmemory-policy", "allkeys-lru",
+		"--maxmemory-samples", "10",
+		"--slowlog-log-slower-than", "5000", "--slowlog-max-len", "64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxMemory != 100<<20 {
+		t.Errorf("MaxMemory: got %d, want %d", c.MaxMemory, 100<<20)
+	}
+	if c.MaxMemoryPolicy != "allkeys-lru" || c.MaxMemorySamples != 10 {
+		t.Errorf("policy/samples: %q/%d", c.MaxMemoryPolicy, c.MaxMemorySamples)
+	}
+	if c.SlowlogSlowerThan != 5000 || c.SlowlogMaxLen != 64 {
+		t.Errorf("slowlog: %d/%d", c.SlowlogSlowerThan, c.SlowlogMaxLen)
+	}
+}
+
+func TestParseBadMemoryFlags(t *testing.T) {
+	if _, err := Parse([]string{"--maxmemory-policy", "allkeys-lfu"}); err == nil {
+		t.Error("expected error for invalid maxmemory-policy")
+	}
+	if _, err := Parse([]string{"--maxmemory", "lots"}); err == nil {
+		t.Error("expected error for invalid maxmemory value")
+	}
+	if _, err := Parse([]string{"--maxmemory-samples", "0"}); err == nil {
+		t.Error("expected error for zero maxmemory-samples")
+	}
+}

@@ -4,7 +4,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/amir/redis-implements/internal/config"
 	"github.com/amir/redis-implements/internal/persist"
@@ -65,7 +67,22 @@ func main() {
 	srv.DBPath = dbPath
 	srv.AOFPath = aofPath
 	srv.StartSavePolicy(cfg.SaveSeconds, cfg.SaveChanges)
+	srv.SetMaxMemory(cfg.MaxMemory)
+	srv.SetMaxMemoryPolicy(cfg.MaxMemoryPolicy)
+	srv.SetMaxMemorySamples(int64(cfg.MaxMemorySamples))
+	srv.SetSlowlog(cfg.SlowlogSlowerThan, cfg.SlowlogMaxLen)
+	srv.SetAppendFsync(cfg.AppendFsync)
 	log.Printf("server: listening on %s (dir=%s)", srv.Addr(), cfg.Dir)
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := <-sigs
+		log.Printf("server: received %v, shutting down", sig)
+		if err := srv.Shutdown(); err != nil {
+			log.Printf("server: shutdown: %v", err)
+		}
+	}()
 
 	if err := srv.Serve(); err != nil {
 		log.Fatalf("server: %v", err)

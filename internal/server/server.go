@@ -20,10 +20,11 @@ var errQuit = errors.New("QUIT")
 
 // Ctx carries the state needed by a single command invocation.
 type Ctx struct {
-	Store *store.Store
-	Args  [][]byte
-	W     *resp.Writer
-	Srv   *Server
+	Store  *store.Store
+	Args   [][]byte
+	W      *resp.Writer
+	Srv    *Server
+	Client *client
 }
 
 // Handler implements a single Redis command.
@@ -34,8 +35,9 @@ type Server struct {
 	Store   *store.Store
 	Expirer *store.Expirer
 	AOF     *persist.Appender
+	PubSub  *PubSub
 	Logger  *log.Logger
-	cmds    map[string]Handler
+	cmds    map[string]cmdSpec
 
 	// Persistence paths (empty disables the related feature).
 	DBPath  string
@@ -47,9 +49,24 @@ type Server struct {
 	lastSave atomic.Int64 // unix seconds of the last successful save
 	saveStop chan struct{}
 
+	// Memory management (see evict.go in store): --maxmemory and policy.
+	maxMemory        atomic.Int64
+	maxMemoryPolicy  atomic.Pointer[string]
+	maxMemorySamples atomic.Int64
+	evicted          atomic.Uint64
+
+	// Slow log.
+	sl *slowlog
+
+	// Server metadata for INFO/CONFIG (set at startup, read-only afterwards).
+	appendFsync string
+	saveSeconds int
+	saveChanges int
+
 	ln       net.Listener
 	mu       sync.Mutex
 	conns    map[net.Conn]struct{}
+	clients  map[net.Conn]*client
 	started  time.Time
 	received uint64
 	connsNum int64
@@ -82,43 +99,6 @@ func (c *Ctx) propagateCmd() {
 	}
 }
 
-// aofWriteCommands are commands that mutate state and therefore belong in the
-// AOF. Commands handled inside their handler (relative TTLs) are excluded here.
-var aofWriteCommands = map[string]bool{
-	"append":  true,
-	"decr":    true,
-	"decrby":  true,
-	"del":     true,
-	"expire":  true,
-	"expireat": true,
-	"flushdb": true,
-	"hdel":    true,
-	"hset":    true,
-	"incr":    true,
-	"incrby":  true,
-	"lpop":    true,
-	"lpush":   true,
-	"lset":    true,
-	"persist": true,
-	"pexpire": true,
-	"pexpireat": true,
-	"rpop":    true,
-	"rpush":   true,
-	"sadd":    true,
-	"set":     true,
-	"srem":    true,
-	"zadd":    true,
-	"zrem":    true,
-}
-
-// aofHandlerCommands propagate from within their handlers because the rewrite
-// (relative -> absolute TTL) depends on whether the command took effect.
-var aofHandlerCommands = map[string]bool{
-	"set":     true,
-	"expire":  true,
-	"pexpire": true,
-}
-
 // propagateFromDispatch logs a write command to the AOF after execution. The
 // command must already be known to be a write command handled centrally.
 func (s *Server) propagateFromDispatch(args [][]byte) {
@@ -149,13 +129,45 @@ func New(addr string, st *store.Store) (*Server, error) {
 	s := &Server{
 		Store:   st,
 		Logger:  log.Default(),
-		cmds:    make(map[string]Handler),
+		cmds:    make(map[string]cmdSpec),
 		conns:   make(map[net.Conn]struct{}),
+		clients: make(map[net.Conn]*client),
+		PubSub:  NewPubSub(),
 		ln:      ln,
 		started: time.Now(),
 	}
+	def := "noeviction"
+	s.maxMemoryPolicy.Store(&def)
+	s.maxMemorySamples.Store(5)
+	s.sl = newSlowlog(10000, 128)
 	s.registerCommands()
 	return s, nil
+}
+
+// SetSlowlog configures the slow log threshold (microseconds) and capacity.
+func (s *Server) SetSlowlog(threshold int64, maxLen int) {
+	s.sl.setConfig(threshold, maxLen)
+}
+
+// SetAppendFsync records the AOF fsync policy name for CONFIG GET/INFO.
+// Call before Serve.
+func (s *Server) SetAppendFsync(name string) { s.appendFsync = name }
+
+// SetMaxMemory configures the maxmemory limit (bytes, 0 disables eviction).
+func (s *Server) SetMaxMemory(n int64) { s.maxMemory.Store(n) }
+
+// SetMaxMemoryPolicy configures the eviction policy.
+func (s *Server) SetMaxMemoryPolicy(p string) { s.maxMemoryPolicy.Store(&p) }
+
+// SetMaxMemorySamples configures how many keys are sampled per eviction cycle.
+func (s *Server) SetMaxMemorySamples(n int64) { s.maxMemorySamples.Store(n) }
+
+// maxMemoryPolicyName returns the active eviction policy.
+func (s *Server) maxMemoryPolicyName() string {
+	if p := s.maxMemoryPolicy.Load(); p != nil {
+		return *p
+	}
+	return "noeviction"
 }
 
 // Addr returns the bound listener address (useful with port 0).
@@ -195,19 +207,25 @@ func (s *Server) Serve() error {
 			return err
 		}
 		atomic.AddInt64(&s.connsNum, 1)
+		c := newClient(conn)
 		s.mu.Lock()
 		s.conns[conn] = struct{}{}
+		s.clients[conn] = c
 		s.mu.Unlock()
-		go s.handleConn(conn)
+		go s.handleConn(conn, c)
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) handleConn(conn net.Conn, c *client) {
 	defer func() {
 		s.mu.Lock()
 		delete(s.conns, conn)
+		delete(s.clients, conn)
 		s.mu.Unlock()
 		atomic.AddInt64(&s.connsNum, -1)
+		s.PubSub.removeClient(c)
+		c.unwatchAll(s.Store)
+		close(c.done)
 		conn.Close()
 		s.Logger.Printf("server: client disconnected: %s", conn.RemoteAddr())
 	}()
@@ -246,32 +264,84 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		atomic.AddUint64(&s.received, 1)
-		ctx := &Ctx{Store: s.Store, Args: args, W: w, Srv: s}
-		if err := s.dispatch(ctx); err == errQuit {
+		ctx := &Ctx{Store: s.Store, Args: args, W: w, Srv: s, Client: c}
+		name := strings.ToLower(string(args[0]))
+
+		// The Pub/Sub pump goroutine shares the connection's bufio with the
+		// command loop, so command execution and the final Flush must both
+		// happen under writeMu.
+		c.writeMu.Lock()
+		c.setLastCmd(name)
+		if c.inMulti && !txnImmediate[name] {
+			s.queueForMulti(ctx, name)
+			if err := w.Flush(); err != nil {
+				c.writeMu.Unlock()
+				s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+				return
+			}
+			c.writeMu.Unlock()
+			continue
+		}
+		started := time.Now()
+		err = s.executeCommand(ctx)
+		s.sl.maybeAdd(args, c.addr, c.name, time.Since(started))
+		if err == errQuit {
 			w.Flush()
+			c.writeMu.Unlock()
 			return
 		}
-		name := strings.ToLower(string(args[0]))
-		if aofWriteCommands[name] && !aofHandlerCommands[name] {
-			s.propagateFromDispatch(args)
-		}
-		if aofWriteCommands[name] {
-			s.dirty.Add(1)
-		}
 		if err := w.Flush(); err != nil {
+			c.writeMu.Unlock()
 			s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
+		c.writeMu.Unlock()
 	}
+}
+
+// executeCommand dispatches a single command and performs the bookkeeping
+// that surrounds execution: maxmemory enforcement, AOF propagation and the
+// dirty counter. It is used both by the connection loop and by EXEC when
+// replaying the transaction queue.
+func (s *Server) executeCommand(ctx *Ctx) error {
+	name := strings.ToLower(string(ctx.Args[0]))
+	spec, _ := s.cmds[name]
+
+	// Deny memory-adding commands under noeviction once the store is over
+	// the limit, like Redis.
+	if m := s.maxMemory.Load(); m > 0 && spec.memAdd && s.maxMemoryPolicyName() == "noeviction" {
+		if int64(s.Store.UsedBytes()) > m {
+			return ctx.W.WriteError("OOM command not allowed when used memory > 'maxmemory'.")
+		}
+	}
+
+	err := s.dispatch(ctx)
+	if spec.write && !spec.aofSelf {
+		s.propagateFromDispatch(ctx.Args)
+	}
+	if spec.write {
+		s.dirty.Add(1)
+		// Evict only when a policy is configured; noeviction is handled by
+		// the pre-execution check above.
+		if m := s.maxMemory.Load(); m > 0 && s.maxMemoryPolicyName() != "noeviction" && int64(s.Store.UsedBytes()) > m {
+			if n := s.Store.EvictCycle(s.maxMemoryPolicyName(), int(s.maxMemorySamples.Load()), m); n > 0 {
+				s.evicted.Add(uint64(n))
+			}
+		}
+	}
+	return err
 }
 
 func (s *Server) dispatch(ctx *Ctx) error {
 	name := strings.ToLower(string(ctx.Args[0]))
-	f, ok := s.cmds[name]
+	if ctx.Client != nil && ctx.Client.subscribed() && !allowedInSubscribeMode[name] {
+		return ctx.W.WriteError("ERR Can't execute '" + name + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")
+	}
+	spec, ok := s.cmds[name]
 	if !ok {
 		return writeUnknownCommand(ctx)
 	}
-	return f(ctx)
+	return spec.handler(ctx)
 }
 
 func writeUnknownCommand(ctx *Ctx) error {
@@ -286,9 +356,4 @@ func writeUnknownCommand(ctx *Ctx) error {
 	}
 	ctx.W.WriteError("ERR unknown command '" + string(ctx.Args[0]) + "', with args beginning with: " + b.String())
 	return nil
-}
-
-// register adds a command to the registry.
-func (s *Server) register(name string, f Handler) {
-	s.cmds[strings.ToLower(name)] = f
 }

@@ -29,12 +29,21 @@ redis-implements/
     │   ├── skiplist.go             # zskiplist (как в Redis)
     │   ├── zset.go                 # ZSET: dict + skiplist + store-операции
     │   ├── expiry.go               # Expirer — активная очистка (фоновый тикер)
+    │   ├── watch.go                # WATCH/CAS реестр наблюдателей (этап 8)
+    │   ├── evict.go                # maxmemory eviction + учёт памяти (этап 8)
     │   ├── store_test.go
     │   ├── collections_test.go
     │   ├── skiplist_test.go
     │   └── bench_test.go           # бенчмарки (этап 6)
     ├── server/                     # TCP-сервер и обработчик команд
     │   ├── server.go               # net.Listen, accept-цикл, горутина на conn, диспетчеризация
+    │   ├── client.go               # per-connection state (подписки, MULTI, WATCH, насос Pub/Sub)
+    │   ├── pubsub.go               # Pub/Sub hub (каналы/паттерны, доставка)
+    │   ├── commands_pubsub.go      # SUBSCRIBE/UNSUBSCRIBE/PSUBSCRIBE/PUNSUBSCRIBE/PUBLISH
+    │   ├── commands_transaction.go # MULTI/EXEC/DISCARD/WATCH/UNWATCH
+    │   ├── slowlog.go              # кольцевой журнал медленных команд
+    │   ├── glob.go                 # Redis-glob (*, ?, [...], \\) для KEYS/SCAN/PSUBSCRIBE
+    │   ├── commands_admin.go       # KEYS/SCAN/CONFIG/CLIENT/SLOWLOG
     │   ├── persist.go              # SAVE/BGSAVE/BGREWRITEAOF + --save политика
     │   ├── commands.go             # регистр + общие/служебные команды
     │   ├── commands_string.go      # строковые команды
@@ -43,6 +52,11 @@ redis-implements/
     │   ├── commands_set.go
     │   ├── commands_zset.go
     │   ├── server_test.go          # integration-тесты (клиент-хелпер)
+    │   ├── commands_pubsub_test.go
+    │   ├── commands_transaction_test.go
+    │   ├── commands_eviction_test.go
+    │   ├── commands_admin_test.go
+    │   ├── glob_test.go
     │   ├── persist_test.go         # перезапуск: данные на месте (RDB/AOF)
     │   ├── commands_types_test.go
     │   └── bench_test.go           # бенчмарки (этап 6)
@@ -131,11 +145,33 @@ redis-implements/
 - [x] **Тесты**: запись → перезапуск → данные на месте (все типы, TTL), повреждённые файлы,
       checksum, обрезанный AOF-хвост, перепись TTL при AOF-загрузке.
 
-### ⏳ Этап 8 — Продвинутые протокольные фичи
-- [ ] Pub/Sub: SUBSCRIBE/PUBLISH/UNSUBSCRIBE/PSUBSCRIBE
-- [ ] Транзакции: MULTI/EXEC/DISCARD/WATCH
-- [ ] Eviction: `--maxmemory`, allkeys-lru/lfu, volatile-ttl
-- [ ] CONFIG GET/SET, CLIENT, SLOWLOG, KEYS/SCAN
+### ✅ Этап 8 — Продвинутые протокольные фичи
+- [x] **Per-connection state** (`client.go`): подписки, очередь MULTI, WATCH-набор,
+      имя/id клиента; сериализация записи между command loop и насосом Pub/Sub (writeMu).
+- [x] **Pub/Sub**: `SUBSCRIBE`/`UNSUBSCRIBE`/`PSUBSCRIBE`/`PUNSUBSCRIBE`/`PUBLISH`;
+      hub каналов/паттернов, push-сообщения через горутину-насос, отключение медленного
+      подписчика; режим подписки ограничивает набор команд (как в Redis), `PING`
+      в подписке отвечает `["pong", msg]`.
+- [x] **Транзакции**: `MULTI`/`EXEC`/`DISCARD`; queue-time валидация (unknown command,
+      arity-таблица, no-MULTI команды) → `-EXECABORT`; runtime-ошибки не прерывают EXEC;
+      команды из очереди прогоняются через общий путь (AOF-пропагация, eviction).
+- [x] **WATCH (CAS)**: реестр наблюдателей в store (`watch.go`) — модификация любого
+      watch-ключа (включая ленивое истечение и удаление) прерывает EXEC с null-ответом;
+      повторный WATCH сбрасывает флаг (работают retry-петли); memory-O(1) на клиента.
+- [x] **Eviction**: приблизительный учёт памяти (`usedBytes`, cost на Entry),
+      `Entry.lastAccess` для LRU; `--maxmemory` (суффиксы k/m/g), `--maxmemory-policy`
+      (noeviction/allkeys-lru/volatile-lru/allkeys-random/volatile-random/volatile-ttl),
+      `--maxmemory-samples`; сэмплирующий evict-цикл; OOM-ошибка при noeviction.
+- [x] **Серверные команды**: `KEYS` (glob), `SCAN` (курсор по отсортированному снапшоту,
+      `MATCH`/`COUNT`), `CONFIG GET`/`CONFIG SET` (maxmemory*, slowlog-*), `CLIENT ID/LIST/
+      SETNAME/GETNAME`, `SLOWLOG GET/LEN/RESET` (`--slowlog-log-slower-than`, `--slowlog-max-len`).
+- [x] **INFO**: секции Memory (`used_memory`/`maxmemory*`), `evicted_keys`,
+      `pubsub_channels/patterns/messages`.
+- [x] **Проверено с настоящим redis-cli**: два подписчика + публикация, pmessage,
+      MULTI/EXEC/WATCH-аборт через один коннект, `redis-benchmark` больше не WARNINGит
+      про CONFIG (135k+ RPS set/get), eviction на живом сервере (2kb → 11 выслано), OOM.
+- Лимитации: evicted ключи не пишутся в AOF; SCAN строит отсортированный снапшот за O(n log n);
+  LFU-политики не реализованы; CLIENT KILL не поддерживается.
 
 ### ⏳ Этап 9 — Production-уровень (исследовательский)
 - [ ] Репликация master→replica (PSYNC, RDB-передача, failover)
@@ -143,6 +179,39 @@ redis-implements/
 - [ ] Lua-скриптинг (EVAL)
 - [ ] Streams (XADD/XRANGE/XREAD, consumer groups)
 - [ ] TLS, Unix-сокеты, модули
+
+### 🚀 Развитие после этапа 8 — вехи M0+
+
+Подробный план (утверждён 2026-10-19) лежит в
+[`docs/roadmap-m0-plus.md`](docs/roadmap-m0-plus.md). Каждая веха — отдельная
+ветка `feat/<milestone>` + draft-MR; мержит владелец.
+
+| Веха | Содержание | Статус |
+|---|---|---|
+| **M0** | Гигиена и быстрые победы: нестабильный тест Pub/Sub, чтения на `RLock`, единый реестр команд | ✅ |
+| M1 | Батчинг пайплайна + снижение аллокаций в RESP-парсере | ⏳ |
+| M2 | Шардирование стора (после M0–M1, по замерам) | ⏳ |
+| M3 | `SELECT` и мульти-БД (16 баз) | ⏳ |
+| M4 | `HELLO` + RESP3 (map/set/double/bignum/verbatim/push) | ⏳ |
+| M5 | `AUTH` / `--requirepass` | ⏳ |
+| M6 | Админ-команды v2: `COMMAND`, `RESET`, `FLUSHALL`, `CLIENT KILL`, `PUBSUB CHANNELS` | ⏳ |
+| M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
+| M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |
+| M9 | Строки v2: `MSET`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `GETRANGE`, `SETRANGE` | ⏳ |
+| M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ⏳ |
+| M11 | Hash v2: `HINCRBY`, `HSTRLEN`, `HRANDFIELD`, `HMGET` | ⏳ |
+| M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
+| M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `LPOS` | ⏳ |
+| M14 | ZSet v2: `ZRANGEBYSCORE`/`BYLEX`, `ZINCRBY`, `ZUNIONSTORE`, `ZPOPMIN` | ⏳ |
+| M15 | Блокирующие команды: `BLPOP`, `BRPOP`, `BZPOPMIN` | ⏳ |
+| M16 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |
+| M17 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
+| M18 | Streams: персистентность (RDB-энкодинг, AOF) | ⏳ |
+| M19 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |
+| M20 | Репликация: инкрементальная синхронизация (`WAIT`, partial resync) | ⏳ |
+
+Отложено до отдельного решения: кластер, Lua (`EVAL`), TLS/Unix-сокеты, `ACL`,
+Geo, HyperLogLog, битовые операции.
 
 ## Контроль качества
 - `go test -race ./...` — после каждого этапа

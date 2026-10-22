@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -232,4 +234,53 @@ func TestExpireWorksOnAnyType(t *testing.T) {
 	if _, ok := s.TTL([]byte("h")); !ok {
 		t.Errorf("expected TTL on hash")
 	}
+}
+
+// TestConcurrentCollectionAccess exercises the read paths of every container
+// type while other goroutines mutate the same keys. The read paths take the
+// store's read lock, so they must never observe a half-updated container
+// (a missing lock would trip the runtime's concurrent map access check).
+func TestConcurrentCollectionAccess(t *testing.T) {
+	s := New()
+	if _, err := s.HashSet([]byte("h"), []byte("f"), []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetAdd([]byte("s"), []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListPush([]byte("l"), false, []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ZAdd([]byte("z"), 1, []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key := []byte(fmt.Sprintf("w%d", id))
+			for i := 0; i < 300; i++ {
+				s.HashGetAll([]byte("h"))
+				s.HashKeys([]byte("h"))
+				s.HashVals([]byte("h"))
+				s.HashGet([]byte("h"), []byte("f"))
+				s.HashExists([]byte("h"), []byte("f"))
+				s.HashLen([]byte("h"))
+				s.SetMembers([]byte("s"))
+				s.SetIsMember([]byte("s"), []byte("m"))
+				s.SetCard([]byte("s"))
+				s.ListRange([]byte("l"), 0, -1)
+				s.ListIndex([]byte("l"), 0)
+				s.ListLen([]byte("l"))
+				s.ZRange([]byte("z"), 0, -1, false)
+				s.ZScore([]byte("z"), []byte("m"))
+				s.ZRank([]byte("z"), []byte("m"), false)
+				s.ZCard([]byte("z"))
+				s.SetString(key, []byte("v"))
+			}
+		}(w)
+	}
+	wg.Wait()
 }
