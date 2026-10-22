@@ -134,10 +134,17 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       Скрипт `scripts/compat-check.sh` + golden-файлы. Используется всеми
       последующими вехами как регрессионный фильтр.
 
-### ⏳ M9 — Строки v2
+### ✅ M9 — Строки v2
 
-- [ ] `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `PSETEX`, `SETNX`, `MSET`, `MSETNX`,
-      `MGET`, `GETRANGE`/`SUBSTR`, `SETRANGE`, `INCRBYFLOAT`.
+- [x] `MSET`, `MSETNX`, `MGET`, `GETSET`, `GETDEL`, `GETEX` (EX/PX/EXAT/PXAT/
+      PERSIST), `SETEX`, `PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE`,
+      `INCRBYFLOAT`.
+- [x] Формат float как в Redis: точное десятичное значение с 17 значащими
+      цифрами (`10.5 + 0.1` → `10.59999999999999964`), без экспоненты.
+- [x] AOF: разбор новых команд и переписывание относительных TTL
+      (`SETEX`/`PSETEX` → `SET` + `PEXPIREAT`).
+- [x] Попутно исправлено: `GETRANGE`/`GETSET`/`GETDEL`/`GETEX` на ключе
+      другого типа возвращали nil вместо `WRONGTYPE`.
 
 ### ⏳ M10 — Инкрементальные обходы
 

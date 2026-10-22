@@ -24,6 +24,13 @@ var ErrWrongType = errors.New("store: wrong type")
 // the requested element does not exist (as opposed to a missing key).
 var errNotFound = errors.New("store: not found")
 
+// ErrNotFloat is returned when a float operation is applied to a value that
+// is not a number.
+var ErrNotFloat = errors.New("store: value is not a valid float")
+
+// ErrOffsetOutOfRange is returned by SETRANGE for a negative offset.
+var ErrOffsetOutOfRange = errors.New("store: offset is out of range")
+
 // Type identifies the kind of value stored in an Entry.
 type Type uint8
 

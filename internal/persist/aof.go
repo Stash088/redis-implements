@@ -154,6 +154,32 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 			}
 		}
 		return [][][]byte{base}
+	case "setex":
+		// SETEX key seconds value -> SET key value + PEXPIREAT
+		if len(args) < 4 {
+			return [][][]byte{args}
+		}
+		sec, err := strconv.ParseInt(string(args[2]), 10, 64)
+		if err != nil || sec <= 0 {
+			return [][][]byte{args}
+		}
+		return [][][]byte{
+			{[]byte("set"), args[1], args[3]},
+			{[]byte("pexpireat"), args[1], itoa(now.Add(time.Duration(sec) * time.Second).UnixMilli())},
+		}
+	case "psetex":
+		// PSETEX key ms value -> SET key value + PEXPIREAT
+		if len(args) < 4 {
+			return [][][]byte{args}
+		}
+		ms, err := strconv.ParseInt(string(args[2]), 10, 64)
+		if err != nil || ms <= 0 {
+			return [][][]byte{args}
+		}
+		return [][][]byte{
+			{[]byte("set"), args[1], args[3]},
+			{[]byte("pexpireat"), args[1], itoa(now.Add(time.Duration(ms) * time.Millisecond).UnixMilli())},
+		}
 	case "expire":
 		if len(args) < 3 {
 			return [][][]byte{args}
@@ -248,6 +274,58 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		return nil
 	}
 	switch name {
+	case "mset":
+		// MSET key value [key value ...]
+		if len(args) >= 3 && len(args)%2 == 1 {
+			st.SetStrings(args[1:], false)
+		}
+	case "msetnx":
+		if len(args) >= 3 && len(args)%2 == 1 {
+			st.SetStrings(args[1:], true)
+		}
+	case "getset":
+		if len(args) >= 3 {
+			st.GetSet(key(), args[2]) //nolint:errcheck
+		}
+	case "getdel":
+		if len(args) >= 2 {
+			st.GetDel(key()) //nolint:errcheck
+		}
+	case "getex":
+		if len(args) >= 2 {
+			st.GetEx(key(), time.Time{}, false) //nolint:errcheck
+		}
+	case "setex":
+		if len(args) >= 4 {
+			sec, err := strconv.ParseInt(string(args[2]), 10, 64)
+			if err == nil && sec > 0 {
+				st.SetEx(key(), args[3], time.Duration(sec)*time.Second)
+			}
+		}
+	case "psetex":
+		if len(args) >= 4 {
+			ms, err := strconv.ParseInt(string(args[2]), 10, 64)
+			if err == nil && ms > 0 {
+				st.SetEx(key(), args[3], time.Duration(ms)*time.Millisecond)
+			}
+		}
+	case "setnx":
+		if len(args) >= 3 {
+			st.SetNX(key(), args[2])
+		}
+	case "setrange":
+		if len(args) >= 4 {
+			off, err := strconv.ParseInt(string(args[2]), 10, 64)
+			if err == nil {
+				st.SetRange(key(), off, args[3])
+			}
+		}
+	case "incrbyfloat":
+		if len(args) >= 3 {
+			if d, err := strconv.ParseFloat(string(args[2]), 64); err == nil {
+				st.IncrByFloat(key(), d)
+			}
+		}
 	case "set":
 		if len(args) < 3 {
 			return nil
