@@ -183,8 +183,9 @@ redis-implements/
 ### 🚀 Развитие после этапа 8 — вехи M0+
 
 Подробный план (утверждён 2026-10-19) лежит в
-[`docs/roadmap-m0-plus.md`](docs/roadmap-m0-plus.md). Каждая веха — отдельная
-ветка `feat/<milestone>` + draft-MR; мержит владелец.
+[`docs/roadmap-m0-plus.md`](docs/roadmap-m0-plus.md), текущее состояние и
+список тонкостей Redis — в [`docs/HANDOFF.md`](docs/HANDOFF.md). Каждая веха —
+отдельная ветка `feat/<milestone>` + draft-MR; мержит владелец.
 
 | Веха | Содержание | Статус |
 |---|---|---|

@@ -276,7 +276,10 @@ go tool pprof -web cpu.prof          # визуальная диаграмма
 
 ## Roadmap
 
-Актуальный план разработки и прогресс ведётся в [`ROADMAP.md`](ROADMAP.md):
+Актуальный план разработки и прогресс ведётся в [`ROADMAP.md`](ROADMAP.md),
+подробности вех — в [`docs/roadmap-m0-plus.md`](docs/roadmap-m0-plus.md),
+состояние на текущий момент и список тонкостей Redis — в
+[`docs/HANDOFF.md`](docs/HANDOFF.md):
 
 - [x] RESP-протокол
 - [x] Типизированное хранилище (string/list/hash/set/zset)
@@ -285,6 +288,8 @@ go tool pprof -web cpu.prof          # визуальная диаграмма
 - [x] Персистентность: RDB (настоящий формат) и AOF
 - [x] Pub/Sub, транзакции MULTI/EXEC/WATCH, eviction, KEYS/SCAN/CONFIG/CLIENT/SLOWLOG
 - [x] Мульти-БД: SELECT, FLUSHALL, изоляция баз, общий maxmemory, RDB/AOF по всем базам
+- [x] RESP3 (`HELLO`), `AUTH`, команды строк/хэшей/множеств/списков/zset, сканы
+- [x] Блокирующие команды, управление ключами, харнесс сверки с настоящим Redis
 - [ ] Репликация, кластер, Lua-скриптинг, Streams, TLS
 
 ## Зачем это
