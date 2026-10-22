@@ -104,6 +104,17 @@ func (s *Server) registerCommands() {
 	// Protocol negotiation.
 	s.reg("HELLO", -1, cmdHello)
 
+	// Administration commands.
+	s.reg("COMMAND", -1, cmdCommand)
+	s.reg("RESET", 1, cmdReset)
+	s.reg("PUBSUB", -2, cmdPubSub)
+	s.reg("TIME", 1, cmdTime)
+	s.reg("LASTSAVE", 1, cmdLastSave)
+	s.reg("RANDOMKEY", 1, cmdRandomKey)
+	s.reg("DEBUG", -2, cmdDebug)
+	s.reg("TOUCH", -2, cmdTouch)
+	s.regW("UNLINK", -2, cmdUnlink)
+
 	// Authentication.
 	s.reg("AUTH", -2, cmdAuth)
 

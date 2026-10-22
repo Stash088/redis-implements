@@ -194,7 +194,7 @@ redis-implements/
 | M3 | `SELECT` и мульти-БД (16 баз) | ✅ |
 | M4 | `HELLO` + RESP3 (map/set/double/bignum/verbatim/push) | ✅ |
 | M5 | `AUTH` / `--requirepass` | ✅ |
-| M6 | Админ-команды v2: `COMMAND`, `RESET`, `FLUSHALL`, `CLIENT KILL`, `PUBSUB CHANNELS` | ⏳ |
+| M6 | Админ-команды v2: `COMMAND`, `RESET`, `CLIENT INFO/KILL/REPLY`, `PUBSUB CHANNELS`, `UNLINK`, `TOUCH`, `RANDOMKEY`, `TIME`, `DEBUG` | ✅ |
 | M7 | Управление ключами: `RENAME`, `COPY`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SORT` | ⏳ |
 | M8 | Дифф-тест против настоящего Redis (harness + golden-файлы) | ⏳ |
 | M9 | Строки v2: `MSET`/`MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `GETRANGE`, `SETRANGE` | ⏳ |

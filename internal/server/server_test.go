@@ -83,6 +83,22 @@ func newClient(t *testing.T, addr string) *client {
 	return &client{t: t, conn: conn, r: resp.NewReader(conn), w: resp.NewWriter(conn)}
 }
 
+// send writes a command without reading its reply (used to check that the
+// server suppresses answers).
+func (c *client) send(args ...string) {
+	c.t.Helper()
+	elems := make([]resp.Value, len(args))
+	for i, a := range args {
+		elems[i] = resp.NewBulkString([]byte(a))
+	}
+	if err := c.w.WriteValue(resp.NewArray(elems)); err != nil {
+		c.t.Fatalf("write command: %v", err)
+	}
+	if err := c.w.Flush(); err != nil {
+		c.t.Fatalf("flush command: %v", err)
+	}
+}
+
 // cmd sends a command and returns the decoded response.
 func (c *client) cmd(args ...string) resp.Value {
 	c.t.Helper()

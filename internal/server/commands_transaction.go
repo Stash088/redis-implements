@@ -26,6 +26,7 @@ var noMultiCommands = map[string]bool{
 	"unsubscribe":  true,
 	"psubscribe":   true,
 	"punsubscribe": true,
+	"reset":        true,
 }
 
 // queueForMulti appends the command to the client's transaction queue and
@@ -36,7 +37,11 @@ var noMultiCommands = map[string]bool{
 func (s *Server) queueForMulti(ctx *Ctx, name string) {
 	c := ctx.Client
 	if noMultiCommands[name] {
-		ctx.W.WriteError(fmt.Sprintf("ERR %s is not allowed in transactions", strings.ToUpper(name)))
+		if name == "reset" {
+			ctx.W.WriteError("ERR RESET cannot be called inside MULTI")
+		} else {
+			ctx.W.WriteError(fmt.Sprintf("ERR %s is not allowed in transactions", strings.ToUpper(name)))
+		}
 		c.abort = true
 		return
 	}
