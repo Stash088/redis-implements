@@ -258,6 +258,95 @@ func TestRewriteAOFStream(t *testing.T) {
 	}
 }
 
+// TestAOFStreamGroups checks that the consumer groups and their pending
+// entries survive a replay of the append-only file.
+func TestAOFStreamGroups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "appendonly.aof")
+	a, err := OpenAppender(path, FsyncNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendCmds(t, a, [][][]byte{
+		{[]byte("XADD"), []byte("s"), []byte("1-0"), []byte("f"), []byte("v1")},
+		{[]byte("XADD"), []byte("s"), []byte("2-0"), []byte("f"), []byte("v2")},
+		{[]byte("XGROUP"), []byte("CREATE"), []byte("s"), []byte("g"), []byte("0")},
+		{[]byte("XGROUP"), []byte("CREATECONSUMER"), []byte("s"), []byte("g"), []byte("c1")},
+		{[]byte("XCLAIM"), []byte("s"), []byte("g"), []byte("c1"), []byte("0"), []byte("1-0"),
+			[]byte("TIME"), []byte("1000"), []byte("RETRYCOUNT"), []byte("1"), []byte("FORCE"), []byte("JUSTID")},
+		{[]byte("XGROUP"), []byte("SETID"), []byte("s"), []byte("g"), []byte("2-0"), []byte("ENTRIESREAD"), []byte("2")},
+	})
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st := store.New()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := LoadAOF(f, []*store.Store{st}); err != nil {
+		t.Fatalf("LoadAOF: %v", err)
+	}
+
+	groups, ok, err := st.StreamGroupsInfo([]byte("s"))
+	if err != nil || !ok {
+		t.Fatalf("StreamGroupsInfo: %v %v", ok, err)
+	}
+	if len(groups) != 1 || groups[0].Name != "g" {
+		t.Fatalf("got the groups %+v, want one group g", groups)
+	}
+	if groups[0].Pending != 1 {
+		t.Errorf("got %d pending entries, want 1", groups[0].Pending)
+	}
+	if groups[0].LastID.MS != 2 {
+		t.Errorf("got the last delivered id %v, want 2-0", groups[0].LastID)
+	}
+	consumers, ok, err := st.StreamConsumersInfo([]byte("s"), "g")
+	if err != nil || !ok {
+		t.Fatalf("StreamConsumersInfo: %v %v", ok, err)
+	}
+	if len(consumers) != 1 || consumers[0].Name != "c1" || consumers[0].Pending != 1 {
+		t.Errorf("got the consumers %+v, want c1 with one pending entry", consumers)
+	}
+}
+
+// TestRewriteAOFStreamGroups checks that the rewrite of the append-only file
+// rebuilds the consumer groups.
+func TestRewriteAOFStreamGroups(t *testing.T) {
+	st := store.New()
+	st.StreamAdd([]byte("s"), store.StreamIDExplicit, store.StreamID{MS: 1}, [][]byte{[]byte("f"), []byte("v1")}, false) //nolint:errcheck
+	st.StreamGroupCreate([]byte("s"), "g", store.StreamID{}, 0, false, false)                                            //nolint:errcheck
+	st.StreamGroupRead([]byte("s"), "g", "c1", store.StreamReadNew, store.StreamID{}, 0, false)                          //nolint:errcheck
+
+	path := filepath.Join(t.TempDir(), "appendonly.aof")
+	if err := RewriteAOF(path, []*store.Store{st}, time.Now()); err != nil {
+		t.Fatalf("RewriteAOF: %v", err)
+	}
+
+	got := store.New()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := LoadAOF(f, []*store.Store{got}); err != nil {
+		t.Fatalf("LoadAOF after rewrite: %v", err)
+	}
+	groups, ok, err := got.StreamGroupsInfo([]byte("s"))
+	if err != nil || !ok {
+		t.Fatalf("StreamGroupsInfo: %v %v", ok, err)
+	}
+	if len(groups) != 1 || groups[0].Pending != 1 {
+		t.Fatalf("got the groups %+v, want one group with a pending entry", groups)
+	}
+	consumers, _, _ := got.StreamConsumersInfo([]byte("s"), "g")
+	if len(consumers) != 1 || consumers[0].Name != "c1" || consumers[0].Pending != 1 {
+		t.Errorf("got the consumers %+v, want c1 with one pending entry", consumers)
+	}
+}
+
 func TestAppenderPolicies(t *testing.T) {
 	for _, p := range []FsyncPolicy{FsyncAlways, FsyncEverySec, FsyncNo} {
 		path := filepath.Join(t.TempDir(), "aof")

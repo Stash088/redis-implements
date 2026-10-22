@@ -18,6 +18,8 @@ const (
 	popZMin
 	// popZMax pops the member with the highest score (BZPOPMAX).
 	popZMax
+	// popStream waits for new entries of a stream (XREAD, XREADGROUP).
+	popStream
 )
 
 // waiter is a client blocked on a set of keys.

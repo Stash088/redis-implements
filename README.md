@@ -11,7 +11,8 @@
   - `list` — собственный двусвязный список (O(1) push/pop с обоих концов);
   - `hash` / `set` — на основе `map`;
   - `zset` — собственный **zskiplist** (dict + skip list), как в настоящем Redis;
-  - `stream` — записи с идентификатором `ms-seq`, как в Redis.
+  - `stream` — записи с идентификатором `ms-seq`, как в Redis, и **группы потребителей**
+    (список неподтверждённых записей, как в Redis).
 - **TTL / истечение** — ленивое (при чтении) + активное (фоновая горутина), `EXPIRE`, `TTL`, `PTTL`, `PERSIST`.
 - **Pub/Sub** — `SUBSCRIBE`/`PUBLISH`/`PSUBSCRIBE` с glob-паттернами; push-сообщения доставляются
   отдельной горутиной «насоса», медленные подписчики отключаются (как в Redis).
@@ -139,6 +140,7 @@ RESP `PING` через busybox `nc`.
 | Множества | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SMISMEMBER`, `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SDIFF`, `SINTER`, `SUNION` (+ варианты `_STORE`) |
 | Сортированные множества | `ZADD`, `ZRANGE`, `ZREVRANGE` (вкл. `WITHSCORES`, `BYSCORE`/`BYLEX`/`REV`/`LIMIT`), `ZSCORE`, `ZREM`, `ZCARD`, `ZRANK`, `ZREVRANK`, `ZINCRBY`, `ZCOUNT`, `ZMSCORE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZLEXCOUNT`, `ZUNIONSTORE`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE`, `ZINTERCARD`, `ZREMRANGEBYRANK`/`BYSCORE`/`BYLEX`, `ZPOPMIN`, `ZPOPMAX`, `ZRANDMEMBER`, `ZRANGESTORE` |
 | Потоки (Streams) | `XADD` (в т.ч. `*`/`ms-*`, `MAXLEN`/`MINID`, `NOMKSTREAM`), `XLEN`, `XRANGE`, `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID` |
+| Потоки: группы | `XGROUP CREATE/DESTROY/CREATECONSUMER/DELCONSUMER/SETID`, `XREAD`, `XREADGROUP`, `XACK`, `XCLAIM`, `XAUTOCLAIM`, `XPENDING`, `XINFO STREAM/GROUPS/CONSUMERS` |
 | Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBLISH` |
 | Транзакции | `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH` |
 | Сервер / диагностика | `CONFIG GET/SET`, `CLIENT ID/LIST/INFO/SETNAME/GETNAME/KILL/REPLY`, `SLOWLOG GET/LEN/RESET`, `COMMAND COUNT/INFO/LIST/DOCS`, `RESET`, `TIME`, `LASTSAVE`, `RANDOMKEY`, `TOUCH`, `UNLINK`, `DEBUG` |

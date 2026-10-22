@@ -22,6 +22,7 @@ var aofWriteCommandList = []string{
 	"zremrangebylex", "zremrangebyrank", "zremrangebyscore", "zrangestore",
 	"zunionstore",
 	"xadd", "xdel", "xsetid", "xtrim",
+	"xack", "xautoclaim", "xclaim", "xgroup", "xreadgroup",
 }
 
 // memoryAddCommandList is the set of commands that can grow the dataset; they
@@ -88,7 +89,7 @@ func TestCommandRegistryMemoryAddSet(t *testing.T) {
 // command took effect.
 func TestCommandRegistryAofSelf(t *testing.T) {
 	cmds := newTestRegistry()
-	want := map[string]bool{"set": true, "expire": true, "pexpire": true, "xadd": true}
+	want := map[string]bool{"set": true, "expire": true, "pexpire": true, "xadd": true, "xreadgroup": true}
 	for name, spec := range cmds {
 		if spec.aofSelf != want[name] {
 			t.Errorf("command %q: aofSelf=%v, want %v", name, spec.aofSelf, want[name])

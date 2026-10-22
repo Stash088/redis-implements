@@ -131,13 +131,21 @@ var commandMeta = map[string]cmdMeta{
 	"zscan":            {flags: []string{"readonly", "slow"}, firstKey: 1, lastKey: 1, step: 1, group: "sorted-set", summary: "Incrementally iterate sorted sets elements and associated scores"},
 
 	// Streams.
-	"xadd":      {flags: []string{"write", "denyoom", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Appends a new entry to a stream"},
-	"xlen":      {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the number of entries in a stream"},
-	"xrange":    {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return a range of entries in a stream"},
-	"xrevrange": {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return a range of entries in a stream, in reverse order"},
-	"xdel":      {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Removes the specified entries from the stream"},
-	"xtrim":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Trims the stream to (approximately) a certain size"},
-	"xsetid":    {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Set the last delivered ID of a stream"},
+	"xadd":       {flags: []string{"write", "denyoom", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Appends a new entry to a stream"},
+	"xlen":       {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the number of entries in a stream"},
+	"xrange":     {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return a range of entries in a stream"},
+	"xrevrange":  {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return a range of entries in a stream, in reverse order"},
+	"xdel":       {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Removes the specified entries from the stream"},
+	"xtrim":      {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Trims the stream to (approximately) a certain size"},
+	"xsetid":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Set the last delivered ID of a stream"},
+	"xgroup":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Manage the consumer groups of a stream"},
+	"xack":       {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Acknowledge the messages of a consumer group"},
+	"xclaim":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Claim the pending messages of a consumer group"},
+	"xautoclaim": {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Claim the idle pending messages of a consumer group"},
+	"xpending":   {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the pending messages of a consumer group"},
+	"xinfo":      {flags: []string{"readonly", "slow"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the information and statistics of a stream"},
+	"xread":      {flags: []string{"readonly", "blocking"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the messages of one or more streams"},
+	"xreadgroup": {flags: []string{"write", "blocking", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the messages of one or more streams to a consumer"},
 
 	// Pub/Sub.
 	"subscribe":    {flags: []string{"readonly", "pubsub", "fast"}, group: "pubsub", summary: "Listen for messages published to the given channels"},

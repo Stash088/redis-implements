@@ -588,8 +588,67 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		applyAOFStreamTrim(st, args)
 	case "xsetid":
 		applyAOFStreamSetID(st, args)
+	case "xgroup":
+		applyAOFStreamGroup(st, args)
+	case "xack":
+		applyAOFStreamAck(st, args)
+	case "xclaim":
+		applyAOFStreamClaim(st, args)
 	}
 	return nil
+}
+
+// applyAOFStreamGroup replays an XGROUP command.
+func applyAOFStreamGroup(st *store.Store, args [][]byte) {
+	cmd, err := store.ParseStreamGroupArgs(args[1:])
+	if err != nil {
+		return
+	}
+	id := cmd.ID
+	if cmd.IDIsDollar {
+		last, ok, err := st.StreamLastID(cmd.Key)
+		if err == nil && ok {
+			id = last
+		}
+	}
+	switch cmd.Sub {
+	case "CREATE":
+		st.StreamGroupCreate(cmd.Key, cmd.Group, id, cmd.EntriesRead, cmd.SetEntriesRead, cmd.MkStream) //nolint:errcheck
+	case "DESTROY":
+		st.StreamGroupDestroy(cmd.Key, cmd.Group) //nolint:errcheck
+	case "CREATECONSUMER":
+		st.StreamGroupCreateConsumer(cmd.Key, cmd.Group, cmd.Consumer) //nolint:errcheck
+	case "DELCONSUMER":
+		st.StreamGroupDelConsumer(cmd.Key, cmd.Group, cmd.Consumer) //nolint:errcheck
+	case "SETID":
+		st.StreamGroupSetID(cmd.Key, cmd.Group, id, cmd.EntriesRead, cmd.SetEntriesRead) //nolint:errcheck
+	}
+}
+
+// applyAOFStreamAck replays an XACK command.
+func applyAOFStreamAck(st *store.Store, args [][]byte) {
+	// XACK key group id [id ...]
+	if len(args) < 4 {
+		return
+	}
+	ids := make([]store.StreamID, 0, len(args)-3)
+	for _, arg := range args[3:] {
+		id, ok := store.ParseStreamIDStrict(string(arg), 0, nil)
+		if !ok {
+			return
+		}
+		ids = append(ids, id)
+	}
+	st.StreamAck(args[1], string(args[2]), ids) //nolint:errcheck
+}
+
+// applyAOFStreamClaim replays an XCLAIM command.
+func applyAOFStreamClaim(st *store.Store, args [][]byte) {
+	cmd, err := store.ParseStreamClaimArgs(args[1:])
+	if err != nil {
+		return
+	}
+	st.StreamClaim(cmd.Key, cmd.Group, cmd.Consumer, cmd.MinIdle, cmd.IDs, cmd.Options) //nolint:errcheck
 }
 
 // applyAOFStreamAdd replays an XADD command.
@@ -758,6 +817,34 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 				args = append(args, entry.Fields...)
 				if _, err := w.Write(EncodeCommand(args)); err != nil {
 					return err
+				}
+			}
+			// The consumer groups are rebuilt as well: the group with its
+			// identifier and the entries of its pending list.
+			groups, _, err := st.StreamGroups([]byte(key))
+			if err != nil {
+				return err
+			}
+			for _, g := range groups {
+				create := [][]byte{
+					[]byte("XGROUP"), []byte("CREATE"), []byte(key), []byte(g.Info.Name),
+					[]byte(g.Info.LastID.String()),
+					[]byte("ENTRIESREAD"), []byte(strconv.FormatUint(g.Info.EntriesRead, 10)),
+				}
+				if _, err := w.Write(EncodeCommand(create)); err != nil {
+					return err
+				}
+				for _, p := range g.Pending {
+					claim := [][]byte{
+						[]byte("XCLAIM"), []byte(key), []byte(g.Info.Name), []byte(p.Consumer), []byte("0"),
+						[]byte(p.ID.String()),
+						[]byte("TIME"), []byte(strconv.FormatInt(p.DeliveryTime.UnixMilli(), 10)),
+						[]byte("RETRYCOUNT"), []byte(strconv.FormatInt(p.DeliveryCount, 10)),
+						[]byte("FORCE"), []byte("JUSTID"),
+					}
+					if _, err := w.Write(EncodeCommand(claim)); err != nil {
+						return err
+					}
 				}
 			}
 		}

@@ -131,6 +131,7 @@ type Stream struct {
 	lastID       StreamID
 	maxDeletedID StreamID
 	entriesAdded uint64
+	groups       map[string]*StreamGroup
 }
 
 // Len returns the number of entries of the stream.
@@ -171,6 +172,14 @@ func (st *Stream) lastIndexLE(id StreamID) int {
 		return i
 	}
 	return i - 1
+}
+
+// firstID returns the identifier of the first entry of the stream.
+func (st *Stream) firstID() StreamID {
+	if len(st.entries) == 0 {
+		return StreamID{}
+	}
+	return st.entries[0].ID
 }
 
 // topID returns the identifier of the last entry of the stream, like Redis

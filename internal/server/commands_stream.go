@@ -271,19 +271,28 @@ func xRangeCommon(ctx *Ctx, cmd string, rev bool) error {
 		return err
 	}
 	for _, entry := range entries {
-		if err := ctx.W.WriteArrayHeader(2); err != nil {
+		if err := writeStreamEntry(ctx.W, entry); err != nil {
 			return err
 		}
-		if err := ctx.W.WriteBulkString([]byte(entry.ID.String())); err != nil {
+	}
+	return nil
+}
+
+// writeStreamEntry writes one entry of a stream: the identifier and the list
+// of the field-value pairs.
+func writeStreamEntry(w *resp.Writer, entry store.StreamEntry) error {
+	if err := w.WriteArrayHeader(2); err != nil {
+		return err
+	}
+	if err := w.WriteBulkString([]byte(entry.ID.String())); err != nil {
+		return err
+	}
+	if err := w.WriteArrayHeader(len(entry.Fields)); err != nil {
+		return err
+	}
+	for _, f := range entry.Fields {
+		if err := w.WriteBulkString(f); err != nil {
 			return err
-		}
-		if err := ctx.W.WriteArrayHeader(len(entry.Fields)); err != nil {
-			return err
-		}
-		for _, f := range entry.Fields {
-			if err := ctx.W.WriteBulkString(f); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
