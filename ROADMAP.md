@@ -189,8 +189,9 @@ redis-implements/
 
 Подробный план (утверждён 2026-10-19) лежит в
 [`docs/roadmap-m0-plus.md`](docs/roadmap-m0-plus.md), текущее состояние и
-список тонкостей Redis — в [`docs/HANDOFF.md`](docs/HANDOFF.md). Каждая веха —
-отдельная ветка `feat/<milestone>` + draft-MR; мержит владелец.
+список тонкостей Redis — в [`docs/HANDOFF.md`](docs/HANDOFF.md). Вехи M0–M20
+слиты в `main` (22.10, merge-коммитами, стек из 18 MR); для новых вех —
+отдельная ветка `feat/<milestone>` + MR, мержит владелец.
 
 | Веха | Содержание | Статус |
 |---|---|---|
@@ -212,9 +213,9 @@ redis-implements/
 | M15 | ZSet v2 (часть 2): `ZUNIONSTORE`/`ZINTERSTORE`/`ZDIFF`/`ZINTERCARD`, `ZREMRANGEBY*`, `ZPOPMIN`/`ZPOPMAX`, `ZRANDMEMBER`, `ZRANGESTORE` | ✅ |
 | M16 | Управление ключами: `RENAME`/`RENAMENX`, `COPY`, `MOVE`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SWAPDB`, `OBJECT`, `SORT` | ✅ |
 | M17 | Блокирующие команды: `BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX` | ✅ |
-| M18 | Харнесс сверки с настоящим Redis (`cmd/compat-check` + `testdata/compat`) | ✅ |
-| M19 | Streams: модель данных (`XADD`, `XLEN`, `XRANGE`, `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID`) | ✅ |
-| M20 | Streams: группы и чтение (`XGROUP`, `XREAD`/`XREADGROUP`, `XACK`, `XCLAIM`, `XAUTOCLAIM`, `XPENDING`, `XINFO`) | ✅ |
+| M18 | Харнесс сверки с настоящим Redis (`cmd/compat-check` + `testdata/compat`) | ✅ слито |
+| M19 | Streams: модель данных (`XADD`, `XLEN`, `XRANGE`, `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID`) | ✅ слито |
+| M20 | Streams: группы и чтение (`XGROUP`, `XREAD`/`XREADGROUP`, `XACK`, `XCLAIM`, `XAUTOCLAIM`, `XPENDING`, `XINFO`) | ✅ слито |
 | M21 | Streams: персистентность (RDB-энкодинг с полной интероп-совместимостью, AOF) | ⏳ |
 | M22 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |
 | M23 | Репликация: инкрементальная синхронизация (`WAIT`, partial resync) | ⏳ |

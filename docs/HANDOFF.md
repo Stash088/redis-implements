@@ -8,7 +8,7 @@
 | | |
 |---|---|
 | Покрытие команд | **177 из 267** команд Redis 8.2 (66 %) — все 177 совпадают с реальными командами Redis |
-| Веток/MR | 18 draft-MR, стек друг на друга (см. §2) |
+| Ветки/MR | **все 18 MR слиты в `main`** (22.10), ветки вех удалены — работа идёт от `main` |
 | Производительность | паритет с Redis 8.2 под пайплайном (0.97–1.06×), 0.84–0.90× на одиночных командах |
 | Сверка с Redis | харнесс `cmd/compat-check`: **все 9 сценариев совпадают** с настоящим Redis 8.2 |
 | Тесты | `go test -race ./...` — зелёный и стабильный при `-count=3` |
@@ -17,36 +17,18 @@
 Не сделано: M2 (шардирование — отложено осознанно), M21–M23 (персистентность
 стримов, репликация).
 
-## 2. Ветки и MR
+## 2. История слияния
 
-Стек: каждая веха основана на предыдущей. Мержит владелец, по порядку снизу вверх.
-
-| MR | Ветка | База для PR | Веха |
-|---|---|---|---|
-| !1 | `feat/m0-foundation` | `main` | M0 — RLock на чтениях, единый реестр команд |
-| !2 | `feat/m1-pipeline-batching` | `feat/m0-foundation` | M1 — батчинг ответов пайплайна |
-| !3 | `feat/m3-multi-db` | `feat/m1-pipeline-batching` | M3 — `SELECT` + 16 баз |
-| !4 | `feat/m4-hello-resp3` | `feat/m3-multi-db` | M4 — `HELLO` + RESP3 |
-| !5 | `feat/m5-auth` | `feat/m4-hello-resp3` | M5 — `AUTH` / `--requirepass` |
-| !6 | `feat/m6-admin-commands` | `feat/m5-auth` | M6 — `COMMAND`, `RESET`, `CLIENT …` |
-| !7 | `feat/m9-string-commands` | `feat/m6-admin-commands` | M9 — строки v2 |
-| !8 | `feat/m10-collection-scans` | `feat/m9-string-commands` | M10 — `HSCAN`/`SSCAN`/`ZSCAN` |
-| !9 | `feat/m11-hash-commands` | `feat/m10-collection-scans` | M11 — hash v2 |
-| !10 | `feat/m12-set-commands` | `feat/m11-hash-commands` | M12 — set v2 |
-| !11 | `feat/m13-list-commands` | `feat/m12-set-commands` | M13 — list v2 |
-| !12 | `feat/m14-zset-range-commands` | `feat/m13-list-commands` | M14 — zset: score/lex |
-| !13 | `feat/m15-zset-operations` | `feat/m14-zset-range-commands` | M15 — zset: операции |
-| !14 | `feat/m16-key-management` | `feat/m15-zset-operations` | M16 — управление ключами |
-| !15 | `feat/m17-blocking-commands` | `feat/m16-key-management` | M17 — блокирующие команды |
-| !16 | `feat/m18-compat-harness` | `feat/m17-blocking-commands` | M18 — харнесс сверки |
-| !17 | `feat/m19-streams` | `feat/m18-compat-harness` | M19 — Streams: модель данных |
-| !18 | `feat/m20-stream-groups` | `feat/m19-streams` | M20 — Streams: группы и чтение |
-
-⚠️ **Важно про `main`**: удалённый `origin/main` на `72327ba` (Stage 7), а локальный
-`main` — на `537103b` (Stage 7 + Dockerfile + Stage 8). Коммиты Stage 8 и
-Dockerfile **не запушены в main**. Перед слиянием их нужно доставить в `main`
-(например, `git push origin main` из локального main или слияние последнего MR
-вместе с ними).
+Стек из 18 draft-MR слит в `main` 22.10 merge-коммитами, снизу вверх:
+`!1` (вместе с ним в `main` пришли незапушенные коммиты Stage 8 и Dockerfile),
+затем `!2`–`!18`; для `!4`–`!18` база PR перед слиянием переставлялась на
+`main` (GitHub сливает PR в его базовую ветку, поэтому после `!1` стеку нужен
+был прямой путь в `main`). Содержимое `!2`/`!3` (M1, M3) дошло до `main` через
+слияние `!4`, чей head уже включал M0+M1+M3+M4. Все 18 PR — в состоянии
+MERGED, ветки вех удалены локально и на GitHub. Итоговый `main` проверен:
+`go build`/`vet`/`gofmt` чисто, `go test -race -count=3 ./internal/...`
+зелёный, все 9 сценариев `scripts/compat-check.sh` совпадают, `COMMAND COUNT`
+= 177.
 
 ## 3. Что делать дальше
 
@@ -199,3 +181,18 @@ redis-benchmark -p 6379 -t get,set -n 100000 -c 50 -P 50
 - Сценарий сверки: `testdata/compat/<family>.txt`, новые команды — туда же.
   Проверять поведение лучше живым `redis-cli` против локального
   `redis-server 8.2`: в zsh `~` и `*` expanding — кавычить (`"~"`, `"*"`).
+
+Порядок слияния стека MR (как делали 22.10, чтобы не наступить на те же грабли):
+- GitHub сливает PR **в его базовую ветку**, а не в `main` — после слияния
+  нижнего MR стек схлопывается в боковые ветки, а `main` больше ничего
+  не получает;
+- поэтому MR ниже по стеку перед слиянием переставляют на `main`:
+  `gh pr edit <n> --base main`, затем `gh pr ready <n>` (draft слить нельзя)
+  и `gh pr merge <n> --merge` — merge-коммитом, снизу вверх;
+- содержимое уже слитых «в бок» MR (`!2`/`!3` в тот раз) доезжает до `main`
+  через следующий MR, чей head их уже включает;
+- ветки вех удалять **только после** последнего слияния (пока база следующего
+  MR живёт на ветке, удалять её нельзя) — локально и на GitHub, затем
+  `git fetch --prune`;
+- после слияния — полный прогон на обновлённом `main` (см. §6 выше) и
+  `COMMAND COUNT` через `redis-cli` как быстрая проверка покрытия.
