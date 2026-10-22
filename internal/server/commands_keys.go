@@ -224,7 +224,7 @@ func cmdSwapDB(ctx *Ctx) error {
 
 // cmdObject implements the OBJECT subcommands.
 func cmdObject(ctx *Ctx) error {
-	if len(ctx.Args) < 3 {
+	if len(ctx.Args) < 2 {
 		wrongArgs(ctx.W, "object")
 		return nil
 	}
@@ -239,6 +239,9 @@ func cmdObject(ctx *Ctx) error {
 			return ctx.W.WriteNullBulk()
 		}
 		return ctx.W.WriteBulkString([]byte(enc))
+	case "help":
+		return ctx.W.WriteBulkString([]byte("OBJECT <subcommand> [<arg> [value] [opt] ...]. " +
+			"Supported subcommands are: ENCODING, FREQ, IDLETIME, REFCOUNT, HELP"))
 	case "refcount", "idletime", "freq":
 		if len(ctx.Args) != 3 {
 			wrongArgs(ctx.W, "object "+string(ctx.Args[1]))
@@ -262,6 +265,8 @@ func cmdSort(ctx *Ctx) error {
 	alpha := false
 	desc := false
 	storeDest := []byte(nil)
+	byPattern := ""
+	var getPatterns []string
 	limitOffset, limitCount := 0, 0
 	hasLimit := false
 	for i := 2; i < len(ctx.Args); {
@@ -296,77 +301,151 @@ func cmdSort(ctx *Ctx) error {
 			}
 			storeDest = ctx.Args[i+1]
 			i += 2
-		case "BY", "GET":
-			// Patterns are not supported.
-			return ctx.W.WriteError("ERR syntax error")
+		case "BY":
+			if i+1 >= len(ctx.Args) {
+				return ctx.W.WriteError("ERR syntax error")
+			}
+			byPattern = string(ctx.Args[i+1])
+			i += 2
+		case "GET":
+			if i+1 >= len(ctx.Args) {
+				return ctx.W.WriteError("ERR syntax error")
+			}
+			getPatterns = append(getPatterns, string(ctx.Args[i+1]))
+			i += 2
 		default:
 			return ctx.W.WriteError("ERR syntax error")
 		}
 	}
+
 	elems, err := ctx.Store.SortElements(ctx.Args[1])
 	if err != nil {
 		return writeWrongType(ctx.W)
 	}
-	// The default order is numeric, like in Redis: without ALPHA every
-	// element must be convertible into a number.
-	if !alpha {
-		for _, e := range elems {
+	// The value the elements are sorted by: the weight looked up with the BY
+	// pattern, or the element itself.
+	sortValues := make([][]byte, len(elems))
+	for i, e := range elems {
+		if byPattern == "" {
+			sortValues[i] = e
+			continue
+		}
+		v, ok := ctx.lookupSortValue(byPattern, e)
+		if !ok {
+			// A missing weight key: the element itself is the weight.
+			sortValues[i] = e
+			continue
+		}
+		sortValues[i] = v
+	}
+	if byPattern == "" && !alpha {
+		// Without BY the elements themselves are compared, and they must be
+		// numbers.
+		for _, e := range sortValues {
 			if _, ok := parseFloat(e); !ok {
 				return ctx.W.WriteError("ERR One or more scores can't be converted into double")
 			}
 		}
 	}
-	sort.Slice(elems, func(i, j int) bool {
-		if alpha {
-			return strings.Compare(string(elems[i]), string(elems[j])) < 0
+
+	idx := make([]int, len(elems))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		c := compareSortValues(sortValues[idx[a]], sortValues[idx[b]], alpha)
+		if desc {
+			return c > 0
 		}
-		na, _ := parseFloat(elems[i])
-		nb, _ := parseFloat(elems[j])
-		switch {
-		case na < nb:
-			return true
-		case na > nb:
-			return false
-		}
-		return strings.Compare(string(elems[i]), string(elems[j])) < 0
+		return c < 0
 	})
-	if desc {
-		for i, j := 0, len(elems)-1; i < j; i, j = i+1, j-1 {
-			elems[i], elems[j] = elems[j], elems[i]
-		}
+	sorted := make([][]byte, len(elems))
+	for i, j := range idx {
+		sorted[i] = elems[j]
 	}
 	if hasLimit {
-		if limitOffset >= len(elems) {
-			elems = nil
+		if limitOffset >= len(sorted) {
+			sorted = nil
 		} else {
-			elems = elems[limitOffset:]
+			sorted = sorted[limitOffset:]
 		}
-		if limitCount >= 0 && limitCount < len(elems) {
-			elems = elems[:limitCount]
+		if limitCount >= 0 && limitCount < len(sorted) {
+			sorted = sorted[:limitCount]
 		}
 	}
+
+	// The GET patterns replace the elements by the values they point at.
+	if len(getPatterns) > 0 {
+		out := make([][]byte, 0, len(sorted)*len(getPatterns))
+		for _, e := range sorted {
+			for _, pattern := range getPatterns {
+				v, _ := ctx.lookupSortValue(pattern, e)
+				out = append(out, v)
+			}
+		}
+		sorted = out
+	}
+
 	if storeDest != nil {
-		if _, err := ctx.Store.SetList(storeDest, elems); err != nil {
+		if _, err := ctx.Store.SetList(storeDest, sorted); err != nil {
 			return writeWrongType(ctx.W)
 		}
 		// The result is stored, so the AOF gets the write commands that
 		// reproduce it (SORT itself is a read command).
 		ctx.propagate([][]byte{[]byte("del"), storeDest})
-		for _, chunk := range chunkElements(elems, 64) {
+		for _, chunk := range chunkElements(sorted, 64) {
 			args := append([][]byte{[]byte("rpush"), storeDest}, chunk...)
 			ctx.propagate(args)
 		}
-		return ctx.W.WriteInteger(int64(len(elems)))
+		return ctx.W.WriteInteger(int64(len(sorted)))
 	}
-	if err := ctx.W.WriteArrayHeader(len(elems)); err != nil {
+	if err := ctx.W.WriteArrayHeader(len(sorted)); err != nil {
 		return err
 	}
-	for _, e := range elems {
+	for _, e := range sorted {
 		if err := ctx.W.WriteBulkString(e); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// lookupSortValue looks up the key a SORT pattern points at. The element
+// replaces the "*" of the pattern. ok is false when the key does not exist.
+func (ctx *Ctx) lookupSortValue(pattern string, element []byte) ([]byte, bool) {
+	key := pattern
+	if strings.Contains(pattern, "*") {
+		key = strings.Replace(pattern, "*", string(element), 1)
+	}
+	v, ok, err := ctx.Store.GetString([]byte(key))
+	if err != nil || !ok {
+		return nil, false
+	}
+	return v, true
+}
+
+// compareSortValues compares two sort values. Without ALPHA the values are
+// compared as numbers, and a value that is not a number counts as zero, like
+// in Redis.
+func compareSortValues(a, b []byte, alpha bool) int {
+	if alpha {
+		return strings.Compare(string(a), string(b))
+	}
+	na, aok := parseFloat(a)
+	nb, bok := parseFloat(b)
+	if !aok {
+		na = 0
+	}
+	if !bok {
+		nb = 0
+	}
+	switch {
+	case na < nb:
+		return -1
+	case na > nb:
+		return 1
+	}
+	return 0
 }
 
 // chunkElements splits the elements into chunks of at most n.
@@ -383,26 +462,4 @@ func chunkElements(elems [][]byte, n int) [][][]byte {
 		out = append(out, elems)
 	}
 	return out
-}
-
-// compareNumeric compares two byte slices numerically when possible and
-// lexicographically otherwise, like the default SORT order of Redis.
-func compareNumeric(a, b []byte) int {
-	na, aok := parseFloat(a)
-	nb, bok := parseFloat(b)
-	switch {
-	case aok && bok:
-		switch {
-		case na < nb:
-			return -1
-		case na > nb:
-			return 1
-		}
-		return 0
-	case aok:
-		return -1
-	case bok:
-		return 1
-	}
-	return strings.Compare(string(a), string(b))
 }

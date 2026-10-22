@@ -116,9 +116,15 @@ func TestHGetDel(t *testing.T) {
 	c := newClient(t, addr)
 	c.intWant("HSET", "h", "a", "1")
 	c.intWant("HSET", "h", "b", "2")
-	// Redis 8 expects the FIELDS form.
-	if n := c.intWant("HGETDEL", "h", "FIELDS", "1", "a"); n != 1 {
-		t.Errorf("HGETDEL: got %d, want 1", n)
+	// Redis 8 expects the FIELDS form and answers with the removed values.
+	arr := c.arrWant("HGETDEL", "h", "FIELDS", "1", "a")
+	if len(arr) != 1 || string(arr[0].Str) != "1" {
+		t.Errorf("HGETDEL: got %+v, want [1]", arr)
+	}
+	// A missing field yields nil.
+	arr = c.arrWant("HGETDEL", "h", "FIELDS", "1", "nosuch")
+	if len(arr) != 1 || !arr[0].IsNull {
+		t.Errorf("HGETDEL of a missing field: got %+v, want [nil]", arr)
 	}
 	if v := c.cmd("HGET", "h", "a"); !isNullBulk(v) {
 		t.Errorf("HGET after HGETDEL: got %+v, want null", v)

@@ -11,33 +11,33 @@ SADD s m1 m2 m3 m4 m5
 ZADD z 1 a 2 b 3 c 4 d 5 e
 
 # --- полный обход ---
-HSCAN h 0
-HSCAN h 0 COUNT 2
-HSCAN h 0 NOVALUES
-HSCAN h 0 MATCH f[12]
-HSCAN h 0 COUNT 2 MATCH f1*
-SSCAN s 0
-SSCAN s 0 COUNT 2
-SSCAN s 0 MATCH m[12]
-ZSCAN z 0
-ZSCAN z 0 COUNT 2
-ZSCAN z 0 MATCH [ab]
+= HSCAN h 0
+= HSCAN h 0 COUNT 2
+= HSCAN h 0 NOVALUES
+= HSCAN h 0 MATCH f[12]
+= HSCAN h 0 COUNT 2 MATCH f1*
+= SSCAN s 0
+= SSCAN s 0 COUNT 2
+= SSCAN s 0 MATCH m[12]
+= ZSCAN z 0
+= ZSCAN z 0 COUNT 2
+= ZSCAN z 0 MATCH [ab]
 
 # --- пустые и отсутствующие ключи ---
-HSCAN nosuchkey 0
-SSCAN nosuchkey 0
-ZSCAN nosuchkey 0
+= HSCAN nosuchkey 0
+= SSCAN nosuchkey 0
+= ZSCAN nosuchkey 0
 
 # --- чужой тип ключа ---
-HSCAN z 0
-SSCAN h 0
-ZSCAN h 0
+= HSCAN z 0
+= SSCAN h 0
+= ZSCAN h 0
 
 # --- ошибки разбора ---
-HSCAN h 0 COUNT 0
-HSCAN h 0 COUNT abc
-HSCAN h 0 MATCH
-HSCAN h abc
-SSCAN s 0 NOVALUES
-ZSCAN z 0 NOVALUES
+= HSCAN h 0 COUNT 0
+= HSCAN h 0 COUNT abc
+= HSCAN h 0 MATCH
+= HSCAN h abc
+= SSCAN s 0 NOVALUES
+= ZSCAN z 0 NOVALUES
 SCAN 0 NOVALUES

@@ -227,12 +227,27 @@ func cmdHGetDel(ctx *Ctx) error {
 	if len(fields) != n {
 		return ctx.W.WriteError("ERR The `numfields` parameter must match the number of arguments")
 	}
-	removed, err := ctx.Store.HashGetDel(ctx.Args[1], fields...)
+	values, err := ctx.Store.HashGetDel(ctx.Args[1], fields...)
 	if err != nil {
 		return writeWrongType(ctx.W)
+	}
+	removed := 0
+	for _, v := range values {
+		if v != nil {
+			removed++
+		}
 	}
 	if removed > 0 {
 		ctx.propagateCmd()
 	}
-	return ctx.W.WriteInteger(int64(removed))
+	// Redis 8 answers with the values of the removed fields.
+	if err := ctx.W.WriteArrayHeader(len(values)); err != nil {
+		return err
+	}
+	for _, v := range values {
+		if err := ctx.W.WriteBulkString(v); err != nil {
+			return err
+		}
+	}
+	return nil
 }

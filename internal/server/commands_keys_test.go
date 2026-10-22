@@ -2,8 +2,6 @@ package server_test
 
 import (
 	"testing"
-
-	"github.com/amir/redis-implements/internal/resp"
 )
 
 func TestRenameAndRenameNX(t *testing.T) {
@@ -200,8 +198,21 @@ func TestSort(t *testing.T) {
 	if len(arr) != 3 || string(arr[0].Str) != "1" {
 		t.Errorf("the stored result: got %+v", arr)
 	}
-	// The BY and GET patterns are not supported.
-	if v := c.cmd("SORT", "num", "BY", "w_*"); v.Kind != resp.KindError {
-		t.Errorf("SORT BY: got %+v, want an error", v)
+	// BY sorts the elements by the value of the looked up key.
+	c.intWant("RPUSH", "w", "a", "b", "c")
+	c.ok("SET", "weight_a", "5")
+	c.ok("SET", "weight_b", "1")
+	arr = c.arrWant("SORT", "w", "BY", "weight_*")
+	if len(arr) != 3 || string(arr[0].Str) != "c" {
+		t.Errorf("SORT BY: got %+v, want the elements ordered by weight", arr)
+	}
+	// GET replaces the elements by the values they point at. Without BY the
+	// elements are still compared numerically, so they must be numbers.
+	c.intWant("RPUSH", "wn", "1", "2", "3")
+	c.ok("SET", "data_1", "AAA")
+	c.ok("SET", "data_2", "BBB")
+	arr = c.arrWant("SORT", "wn", "GET", "data_*")
+	if len(arr) != 3 || string(arr[0].Str) != "AAA" {
+		t.Errorf("SORT GET: got %+v, want the values of the data keys", arr)
 	}
 }

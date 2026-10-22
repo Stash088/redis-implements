@@ -5,9 +5,9 @@ SADD a x y z
 SADD b y z w
 
 # --- теоретико-множественные операции ---
-SDIFF a b
-SINTER a b
-SUNION a b
+% SDIFF a b
+% SINTER a b
+% SUNION a b
 SINTERCARD 2 a b
 SINTERCARD 2 a b LIMIT 1
 SINTERCARD 1 a
@@ -15,28 +15,28 @@ SINTERCARD 2 a nosuchset
 
 # --- сохранение результатов ---
 SDIFFSTORE d a b
-SMEMBERS d
+% SMEMBERS d
 SINTERSTORE i a b
-SMEMBERS i
+% SMEMBERS i
 SUNIONSTORE u a b
-SMEMBERS u
+% SMEMBERS u
 
 # --- перенос и выборка ---
-SMOVE a b x
-SMEMBERS a
-SMEMBERS b
-SMOVE a b nosuchmember
+% SMOVE a b x
+% SMEMBERS a
+% SMEMBERS b
+% SMOVE a b nosuchmember
 SMISMEMBER b y z
-SRANDMEMBER b
-SPOP b 1
+~ SRANDMEMBER b
+~ SPOP b 1
 SCARD b
 
 # --- ошибки ---
-SDIFF str
-SINTER str
-SUNION str
+% SDIFF str
+% SINTER str
+% SUNION str
 SINTERCARD 0
-SMOVE str other m
-SPOP str
+% SMOVE str other m
+~ SPOP str
 SMISMEMBER str m
 SDIFFSTORE dest str

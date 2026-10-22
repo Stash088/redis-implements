@@ -218,31 +218,33 @@ func (s *Store) hashFieldList(key []byte) ([][]byte, error) {
 	return out, nil
 }
 
-// HashGetDel removes the given fields of the hash and returns the number of
-// fields that were removed.
-func (s *Store) HashGetDel(key []byte, fields ...[]byte) (int, error) {
+// HashGetDel removes the given fields of the hash and returns their values. A
+// field that does not exist yields a nil value, like Redis does.
+func (s *Store) HashGetDel(key []byte, fields ...[]byte) ([][]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	out := make([][]byte, len(fields))
 	e, ok := s.entryLocked(key)
 	if !ok {
-		return 0, nil
+		return out, nil
 	}
 	if e.Type != TypeHash {
-		return 0, ErrWrongType
+		return nil, ErrWrongType
 	}
 	s.touchLocked(string(key))
-	removed := 0
-	for _, f := range fields {
+	for i, f := range fields {
 		name := string(f)
-		if old, exists := e.Hash[name]; exists {
-			delete(e.Hash, name)
-			s.addCost(e, -(len(name) + len(old)))
-			removed++
+		old, exists := e.Hash[name]
+		if !exists {
+			continue
 		}
+		out[i] = old
+		delete(e.Hash, name)
+		s.addCost(e, -(len(name) + len(old)))
 	}
 	if len(e.Hash) == 0 {
 		s.usedBytes -= e.cost
 		delete(s.data, string(key))
 	}
-	return removed, nil
+	return out, nil
 }

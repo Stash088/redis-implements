@@ -122,17 +122,15 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       `NO-TOUCH`, `UNBLOCK`.
 - [x] `PUBSUB`: `CHANNELS`, `NUMSUB`, `NUMPAT`.
 
-### ⏳ M7 — Управление ключами
+### ✅ M7 — Управление ключами (сделано в вехе **M16**)
 
-- [ ] `RENAME`, `RENAMENX`, `COPY`, `MOVE`, `DUMP`, `RESTORE`, `EXPIRETIME`,
-      `PEXPIRETIME`, `SWAPDB`, `OBJECT ENCODING`, `SORT`.
+- [x] `RENAME`, `RENAMENX`, `COPY`, `MOVE`, `DUMP`, `RESTORE`, `EXPIRETIME`,
+      `PEXPIRETIME`, `SWAPDB`, `OBJECT ENCODING`, `SORT` — подробности в M16.
 
-### ⏳ M8 — Дифф-тест против настоящего Redis
+### ✅ M8 — Харнесс сверки (сделан в вехе **M18**)
 
-- [ ] Harness: сценарии (`.txt` с командами) → прогон против нашей реализации
-      и против локального `redis-server` 8.2 → нормализация и diff ответов.
-      Скрипт `scripts/compat-check.sh` + golden-файлы. Используется всеми
-      последующими вехами как регрессионный фильтр.
+- [x] `cmd/compat-check` + сценарии `testdata/compat/*.txt` + скрипт
+      `scripts/compat-check.sh` — подробности в M18.
 
 ### ✅ M9 — Строки v2
 
@@ -167,10 +165,16 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       поддержки TTL полей в RDB, которой нет — иначе данные терялись бы при
       сохранении. Зафиксировано как ограничение.
 
-### ⏳ M12 — Set v2
+### ✅ M12 — Set v2
 
-- [ ] `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SMISMEMBER`, `SDIFF`(`_STORE`),
-      `SINTER`(`_STORE`), `SUNION`(`_STORE`).
+- [x] `SINTERCARD` (с `LIMIT`), `SMOVE`, `SPOP` (`count`), `SRANDMEMBER`
+      (`count`), `SMISMEMBER`, `SDIFF`/`SDIFFSTORE`, `SINTER`/`SINTERSTORE`,
+      `SUNION`/`SUNIONSTORE`.
+- [x] В RESP3 `SDIFF`/`SINTER`/`SUNION`/`SPOP`/`SRANDMEMBER` отдаются
+      множеством — как в Redis.
+- [x] Хранилище: `SetIntersectCard`, `SetMove`, `SetPop`, `SetRandomMembers`,
+      `SetIsMemberMany`, `SetDiff`, `SetInter`, `SetUnion`, `SetStore`.
+- [x] AOF: разбор новых команд; сценарий сверки `testdata/compat/set.txt`.
 
 ### ✅ M13 — List v2
 
@@ -185,41 +189,106 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       `ListMove`, `ListPushExist`.
 - [x] AOF: разбор новых команд; сценарий сверки `testdata/compat/list.txt`.
 
-### ⏳ M14 — ZSet v2 (range-семейство)
+### ✅ M14 — ZSet v2, часть 1: score/lex-семейство
 
-- [ ] `ZINCRBY`, `ZCOUNT`, `ZMSCORE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
-      `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZRANGE ... BYSCORE/BYLEX`, `ZLEXCOUNT`,
-      `ZREMRANGEBYRANK/SCORE/LEX`, `ZPOPMIN`, `ZPOPMAX`, `ZRANDMEMBER`,
-      `ZRANGESTORE`, `ZDIFF`(`_STORE`), `ZUNIONSTORE`, `ZINTERSTORE`, `ZINTERCARD`.
+- [x] `ZINCRBY`, `ZCOUNT`, `ZMSCORE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
+      `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZLEXCOUNT`, `ZRANGE … BYSCORE|BYLEX|REV|LIMIT`.
+- [x] Границы как в Redis: `(1` — исключительно, `-inf`/`+inf`, `[a`/`(a` — lex;
+      с `REV` границы меняются местами, без `BYSCORE`/`BYLEX` индексы
+      применяются к обратному порядку множества.
+- [x] Хранилище: `ZRangeByScore`, `ZRangeByLex`, `ZCount`, `ZLexCount`,
+      `ZIncrBy`, `ZMScore`, `ZLen`; в `ZSet` — `RangeByScore`, `RangeByLex`,
+      `CountByScore`, `CountByLex`.
+- [x] AOF: разбор `ZINCRBY`; сценарий сверки `testdata/compat/zset.txt`.
 
-### ⏳ M15 — Блокирующие команды
+### ✅ M15 — ZSet v2, часть 2: операции и выборка
 
-- [ ] `BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`, `BZPOPMIN`, `BZPOPMAX`:
-      механизм ожидания на клиенте, таймауты, разблокировка при обрыве.
+- [x] `ZUNIONSTORE`, `ZINTERSTORE` (WEIGHTS/AGGREGATE SUM|MIN|MAX), `ZDIFF`,
+      `ZDIFFSTORE`, `ZINTERCARD` (LIMIT), `ZREMRANGEBYRANK`/`BYSCORE`/`BYLEX`,
+      `ZPOPMIN`, `ZPOPMAX`, `ZRANDMEMBER`, `ZRANGESTORE`.
+- [x] Ошибки как в Redis: `ERR at least 1 input key is needed for '<cmd>' command`,
+      `ERR syntax error` для неизвестного агрегата.
+- [x] `ZRANGESTORE` без `BYSCORE`/`BYLEX` работает с индексами рангов.
+- [x] Хранилище: `ZUnionStore`, `ZInterStore`, `ZDiff`, `ZDiffStore`,
+      `ZInterCard`, `ZRemRangeByRank/Score/Lex`, `ZPop`, `ZRandomMembers`,
+      `ZRangeStoreByRank/Score/Lex`; в `ZSet` — `entryAt`.
 
-### ⏳ M16 — Streams: модель данных
+### ✅ M16 — Управление ключами
+
+- [x] `RENAME`, `RENAMENX`, `COPY` (`DB`/`REPLACE`), `MOVE`, `DUMP`, `RESTORE`,
+      `EXPIRETIME`, `PEXPIRETIME`, `SWAPDB`, `OBJECT` (`ENCODING`/`REFCOUNT`/
+      `IDLETIME`/`FREQ`), `SORT` (`ASC`/`DESC`, `ALPHA`, `LIMIT`, `STORE`, `BY`,
+      `GET`).
+- [x] `DUMP`/`RESTORE`: payload — сериализованное значение (формат RDB + CRC64)
+      с экспортируемыми `persist.DumpValue`/`persist.RestoreValue`. Формат
+      payload'а наш: настоящий Redis его не восстановит — отмечено как
+      ограничение.
+- [x] `TTL` теперь округляется до ближайшей секунды, как в Redis.
+- [x] `SORT` без `ALPHA` требует, чтобы все элементы были числами, иначе
+      `ERR One or more scores can't be converted into double` — как в Redis.
+      С `BY` вес, которого нет, считается нулём; `GET` подставляет значения
+      найденных ключей.
+- [x] AOF: разбор `RENAME`/`RENAMENX`/`RESTORE`; сценарий сверки
+      `testdata/compat/keys.txt`.
+
+### ✅ M17 — Блокирующие команды
+
+- [x] `BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX`.
+- [x] Механизм: реестр ожидающих клиентов (`internal/server/blocking.go`),
+      писающая команда будит ожидающих ключа; клиент просыпается и повторяет
+      команду. Ожидание с таймаутом (`0` — ждать вечно) и разблокировка при
+      обрыве соединения.
+- [x] Пока клиент ждёт, он не читает новые команды (как в Redis), но
+      `writeMu` отпускается — насос Pub/Sub продолжает работать.
+- [x] Ответы как в Redis: `BLPOP`/`BRPOP` → `[key, value]`,
+      `BZPOPMIN`/`BZPOPMAX` → `[key, member, score]`, по таймауту — null-массив.
+- [ ] Ограничение: обрыв соединения заблокированного клиента замечается
+      только по таймауту (как и в Redis, где помогает `CLIENT KILL`).
+
+### ✅ M18 — Харнесс сверки
+
+- [x] Инструмент `cmd/compat-check` (Go, без зависимостей): подключается к
+      двум серверам, выполняет сценарии и сравнивает **декодированные значения
+      RESP (типы + значения)**. Перед каждым сценарием базы очищаются, так что
+      сценарии независимы.
+- [x] Режимы сравнения в сценариях: `~` — волатильный ответ (не сравнивается:
+      время, случайные значения, формат `DUMP`), `%` — элементы ответа
+      сравниваются как мультимножество (порядок в хэше/множестве не задан),
+      `=` — ответ курсора собирается целиком (границы батчей SCAN у разных
+      реализаций разные).
+- [x] Сценарии — `testdata/compat/*.txt`: blocking, hash, keys, list, scan,
+      set, zset.
+- [x] Скрипт `scripts/compat-check.sh` поднимает оба сервера и запускает
+      сравнение.
+- [x] Харнесс нашёл реальные расхождения, которые исправлены: `HGETDEL`
+      возвращает массив удалённых значений (а не число), `SORT … BY/GET` —
+      полноценная поддержка, ошибки `OBJECT HELP` и `SORT` без `ALPHA`.
+
+**Текущее состояние: все 7 сценариев совпадают с настоящим Redis 8.2.**
+
+### ⏳ M19 — Streams: модель данных
 
 - [ ] Новый `TypeStream` в `internal/store`: записи (id `ms-seq`, поля),
       `XADD` (в т.ч. `*`/`ms-*`, `MAXLEN`/`MINID`), `XLEN`, `XRANGE`,
       `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID`.
 
-### ⏳ M17 — Streams: группы и чтение
+### ⏳ M20 — Streams: группы и чтение
 
 - [ ] `XREAD` (блокирующий и нет), `XREADGROUP`, `XACK`, `XGROUP`
       (`CREATE`/`DESTROY`/`CREATECONSUMER`/`DELCONSUMER`/`SETID`), `XINFO`,
       `XPENDING`, `XAUTOCLAIM`.
 
-### ⏳ M18 — Streams: персистентность
+### ⏳ M21 — Streams: персистентность
 
 - [ ] RDB-энкодинг stream (listpack, как в Redis 7+), AOF-пропагация,
       round-trip и интероп-тесты.
 
-### ⏳ M19 — Репликация: каркас
+### ⏳ M22 — Репликация: каркас
 
 - [ ] `REPLICAOF`/`SLAVEOF`, `ROLE`, секция `replication` в `INFO`, `REPLCONF`
       (`listening-port`, `capa`), handshake `PSYNC`, полный sync (передача RDB).
 
-### ⏳ M20 — Репликация: инкрементальная синхронизация
+### ⏳ M23 — Репликация: инкрементальная синхронизация
 
 - [ ] Поток пишущих команд на реплики, буферизация при медленной реплике,
       команда `WAIT`, частичный resync по offset/replication ID, `WAITAOF`.
