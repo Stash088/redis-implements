@@ -155,10 +155,17 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
       для хэша и множества отсортированы, для zset — по score.
 - [x] Сценарий сверки `testdata/compat/scan.txt` (данные для харнесса M18).
 
-### ⏳ M11 — Hash v2
+### ✅ M11 — Hash v2
 
-- [ ] `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`,
-      `HRANDFIELD`, `HGETDEL`.
+- [x] `HINCRBY`, `HINCRBYFLOAT` (формат float — как у Redis), `HSTRLEN`,
+      `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD` (`count`/`WITHVALUES`),
+      `HGETDEL` (синтаксис Redis 8: `key FIELDS numfields field…`).
+- [x] Хранилище: `HashIncrBy`, `HashIncrByFloat`, `HashStrLen`, `HashMGet`,
+      `HashSetNX`, `HashRandomField(s)`, `HashGetDel`.
+- [x] AOF: разбор новых команд; сценарий сверки `testdata/compat/hash.txt`.
+- [ ] Поле-TTL команды (`HEXPIRE`/`HTTL`/`HSETEX`) не делаем: они требуют
+      поддержки TTL полей в RDB, которой нет — иначе данные терялись бы при
+      сохранении. Зафиксировано как ограничение.
 
 ### ⏳ M12 — Set v2
 

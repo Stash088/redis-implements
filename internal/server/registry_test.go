@@ -11,15 +11,17 @@ import (
 var aofWriteCommandList = []string{
 	"append", "decr", "decrby", "del", "expire", "expireat", "flushall",
 	"flushdb", "hdel", "hset", "incr", "incrby", "lpop", "lpush", "lset",
-	"incrbyfloat", "persist", "pexpire", "pexpireat", "rpop", "rpush", "sadd",
-	"set", "srem", "unlink", "zadd", "zrem",
+	"hgetdel", "hincrby", "hincrbyfloat", "hmset", "hsetnx", "incrbyfloat",
+	"persist", "pexpire", "pexpireat", "rpop", "rpush", "sadd", "set", "srem",
+	"unlink", "zadd", "zrem",
 }
 
 // memoryAddCommandList is the set of commands that can grow the dataset; they
 // are denied under noeviction once the store is over maxmemory.
 var memoryAddCommandList = []string{
-	"append", "decr", "decrby", "hset", "incr", "incrby", "incrbyfloat",
-	"lpush", "lset", "rpush", "sadd", "set", "zadd",
+	"append", "decr", "decrby", "hincrby", "hincrbyfloat", "hmset", "hset",
+	"hsetnx", "incr", "incrby", "incrbyfloat", "lpush", "lset", "rpush", "sadd",
+	"set", "zadd",
 }
 
 func newTestRegistry() map[string]cmdSpec {
