@@ -26,6 +26,10 @@ type Ctx struct {
 	W      *resp.Writer
 	Srv    *Server
 	Client *client
+
+	// wait is set by a blocking command that found nothing to pop: the
+	// connection loop waits for a key to become available and retries.
+	wait *waitRequest
 }
 
 // proto3 reports whether the client speaks RESP3.
@@ -65,6 +69,9 @@ type Server struct {
 
 	// Slow log.
 	sl *slowlog
+
+	// Clients blocked on the keys of the blocking commands.
+	waiters *waiters
 
 	// Password clients must authenticate with (empty disables it).
 	requirepass atomic.Pointer[string]
@@ -154,6 +161,7 @@ func New(addr string, dbs []*store.Store) (*Server, error) {
 	def := "noeviction"
 	s.maxMemoryPolicy.Store(&def)
 	s.maxMemorySamples.Store(5)
+	s.waiters = newWaiters()
 	s.sl = newSlowlog(10000, 128)
 	s.registerCommands()
 	return s, nil
@@ -330,6 +338,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		atomic.AddUint64(&s.received, 1)
 		ctx := &Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
 		name := strings.ToLower(string(args[0]))
+		spec, _ := s.cmds[name]
 
 		// The Pub/Sub pump goroutine shares the connection's bufio with the
 		// command loop, so command execution and the final Flush must both
@@ -363,6 +372,58 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		started := time.Now()
 		err = s.executeCommand(ctx)
 		s.sl.maybeAdd(args, c.addr, c.name, time.Since(started))
+		if spec.write && len(args) > 1 {
+			// A write may have made a key available for a blocked client.
+			s.waiters.signal(string(args[1]))
+		}
+		if ctx.wait != nil {
+			// A blocking command found nothing to pop: release the write
+			// lock (the Pub/Sub pump needs it) and wait for a key to become
+			// available, then retry the command.
+			req := ctx.wait
+			ctx.wait = nil
+			c.writeMu.Unlock()
+			woken := s.waitForKeys(c, req)
+			c.writeMu.Lock()
+			if !woken {
+				// The timeout expired: reply with a null array.
+				if err := ctx.W.WriteNullArray(); err != nil {
+					c.writeMu.Unlock()
+					s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+					return
+				}
+				c.writeMu.Unlock()
+				continue
+			}
+			for {
+				ctx.wait = nil
+				err = s.executeCommand(ctx)
+				if ctx.wait == nil {
+					break
+				}
+				// Still nothing: wait again.
+				req = ctx.wait
+				ctx.wait = nil
+				c.writeMu.Unlock()
+				woken = s.waitForKeys(c, req)
+				c.writeMu.Lock()
+				if !woken {
+					if err := ctx.W.WriteNullArray(); err != nil {
+						c.writeMu.Unlock()
+						s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+						return
+					}
+					break
+				}
+			}
+			if err == errQuit {
+				w.Flush()
+				c.writeMu.Unlock()
+				return
+			}
+			c.writeMu.Unlock()
+			continue
+		}
 		if suppress {
 			shadow.Flush()
 			if mode == replySkip {

@@ -378,6 +378,43 @@ func (s *Store) ZPop(key []byte, count int, lowest bool) ([]ZEntry, error) {
 	return out, nil
 }
 
+// ZPopAny pops the member with the lowest (or highest) score from the first
+// non-empty sorted set of the given keys.
+func (s *Store) ZPopAny(keys [][]byte, lowest bool) (key []byte, entry ZEntry, ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.clock()
+	for _, k := range keys {
+		e, ok := s.data[string(k)]
+		if !ok || e.Expired(now) {
+			continue
+		}
+		if e.Type != TypeZSet {
+			return nil, ZEntry{}, false, ErrWrongType
+		}
+		if e.ZSet.Len() == 0 {
+			continue
+		}
+		idx := 0
+		if !lowest {
+			idx = e.ZSet.Len() - 1
+		}
+		entry := e.ZSet.entryAt(idx)
+		if entry == nil {
+			continue
+		}
+		s.touchLocked(string(k))
+		e.ZSet.Remove(entry.Member)
+		s.addCost(e, -(len(entry.Member) + elemOverhead))
+		if e.ZSet.Len() == 0 {
+			s.usedBytes -= e.cost
+			delete(s.data, string(k))
+		}
+		return k, *entry, true, nil
+	}
+	return nil, ZEntry{}, false, nil
+}
+
 // ZRandomMembers returns random members of the sorted set. A negative count
 // returns |count| members, possibly with repetitions.
 func (s *Store) ZRandomMembers(key []byte, count int) ([]ZEntry, error) {

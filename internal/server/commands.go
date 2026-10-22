@@ -178,6 +178,13 @@ func (s *Server) registerCommands() {
 	s.reg("SETRANGE", 4, cmdSetRange)
 	s.regWG("INCRBYFLOAT", 3, cmdIncrByFloat)
 
+	// Blocking commands.
+	s.regW("BLPOP", -3, cmdBLPop)
+	s.regW("BRPOP", -3, cmdBRPop)
+	s.regW("BLMOVE", 6, cmdBLMove)
+	s.regW("BZPOPMIN", -3, cmdBZPopMin)
+	s.regW("BZPOPMAX", -3, cmdBZPopMax)
+
 	// Key management commands.
 	s.regW("RENAME", 3, cmdRename)
 	s.regW("RENAMENX", 3, cmdRenameNX)
