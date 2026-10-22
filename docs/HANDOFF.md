@@ -1,4 +1,4 @@
-# Handoff: состояние проекта `redis-implements` на 2026-10-21
+# Handoff: состояние проекта `redis-implements` на 2026-10-22
 
 Документ для того, кто продолжит работу в новой сессии. Он отвечает на
 вопросы «где мы», «что делать дальше» и «на что обратить внимание».
@@ -7,14 +7,15 @@
 
 | | |
 |---|---|
-| Покрытие команд | **162 из 267** команд Redis 8.2 (61 %) — все 162 совпадают с реальными командами Redis |
-| Веток/MR | 16 draft-MR, стек друг на друга (см. §2) |
+| Покрытие команд | **169 из 267** команд Redis 8.2 (63 %) — все 169 совпадают с реальными командами Redis |
+| Веток/MR | 17 draft-MR, стек друг на друга (см. §2) |
 | Производительность | паритет с Redis 8.2 под пайплайном (0.97–1.06×), 0.84–0.90× на одиночных командах |
-| Сверка с Redis | харнесс `cmd/compat-check`: **все 7 сценариев совпадают** с настоящим Redis 8.2 |
+| Сверка с Redis | харнесс `cmd/compat-check`: **все 8 сценариев совпадают** с настоящим Redis 8.2 |
 | Тесты | `go test -race ./...` — зелёный и стабильный при `-count=3` |
 
-Реализованные вехи: M0, M1, M3, M4, M5, M6, M9–M18.
-Не сделано: M2 (шардирование — отложено осознанно), M19–M23 (Streams, репликация).
+Реализованные вехи: M0, M1, M3, M4, M5, M6, M9–M19.
+Не сделано: M2 (шардирование — отложено осознанно), M20–M23 (группы потоков,
+персистентность стримов, репликация).
 
 ## 2. Ветки и MR
 
@@ -38,6 +39,7 @@
 | !14 | `feat/m16-key-management` | `feat/m15-zset-operations` | M16 — управление ключами |
 | !15 | `feat/m17-blocking-commands` | `feat/m16-key-management` | M17 — блокирующие команды |
 | !16 | `feat/m18-compat-harness` | `feat/m17-blocking-commands` | M18 — харнесс сверки |
+| !17 | `feat/m19-streams` | `feat/m18-compat-harness` | M19 — Streams: модель данных |
 
 ⚠️ **Важно про `main`**: удалённый `origin/main` на `72327ba` (Stage 7), а локальный
 `main` — на `537103b` (Stage 7 + Dockerfile + Stage 8). Коммиты Stage 8 и
@@ -47,16 +49,8 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 
 ## 3. Что делать дальше
 
-Порядок вех — в `docs/roadmap-m0-plus.md` (§ «M19–M23»), там же — детали по
+Порядок вех — в `docs/roadmap-m0-plus.md` (§ «M20–M23»), там же — детали по
 каждой вехе. Коротко:
-
-### M19 — Streams: модель данных
-- Новый `TypeStream` в `internal/store`: записи (id `ms-seq`, поля), генерация id.
-- `XADD` (в т.ч. `*`/`ms-*`, `MAXLEN`/`MINID`), `XLEN`, `XRANGE`, `XREVRANGE`,
-  `XDEL`, `XTRIM`, `XSETID`.
-- AOF-пропагация `XADD`/`XDEL`/`XTRIM`.
-- Начать с: `internal/store/stream.go` (тип записи, id, контейнер), затем
-  `internal/server/commands_stream.go`.
 
 ### M20 — Streams: группы и чтение
 - `XREAD` (блокирующий и нет), `XREADGROUP`, `XACK`, `XGROUP`
@@ -65,6 +59,10 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 - Заблокированный `XREAD` переиспользует механизм ожидания из M17
   (`internal/server/blocking.go`): регистрируем ожидание на ключе потока и
   будим его командой `XADD`.
+- Модель данных готова (M19): `internal/store/stream.go` — `StreamID`,
+  `Stream`, `StreamEntry`, операции `StreamAdd`/`StreamRange`/`StreamDelete`/
+  `StreamTrim`/`StreamSetID`; разбор аргументов команд — `ParseStreamAddArgs`
+  и `ParseStreamTrimArgs` (ими же пользуется реплей AOF).
 
 ### M21 — Streams: персистентность (полная интероп-совместимость)
 - **listpack-энкодер** в `internal/persist` — сейчас есть только декодер
@@ -72,6 +70,8 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 - Формат `RDB_TYPE_STREAM_LISTPACKS` (15): метаданные стрима, по listpack на
   запись, consumer-группы. Точный layout — в исходниках Redis (`rdb.c`).
 - Интероп-тест: наш дамп со стримами читает настоящий `redis-server` 8.2.
+- Пока формата нет, `SAVE` пропускает ключи-потоки (предупреждение в лог),
+  а `DUMP` потока возвращает ошибку — см. §4.
 
 ### M22 — Репликация: каркас
 - `REPLICAOF`/`SLAVEOF`, `ROLE`, секция `replication` в `INFO`, `REPLCONF`
@@ -86,6 +86,9 @@ Dockerfile **не запушены в main**. Перед слиянием их �
 | Что | Почему | Где смотреть |
 |---|---|---|
 | `DUMP`/`RESTORE` — свой формат payload'а | настоящий Redis такой payload не восстановит | `internal/persist/dump.go` |
+| **Стримы не сохраняются в RDB** (формат стримов — в вехе M21) | `SAVE` пропускает ключи-потоки и пишет предупреждение в лог; AOF их сохраняет | `internal/persist/rdb.go` (`rdbEntries`), `internal/server/persist.go` |
+| `DUMP` потока возвращает ошибку | нет payload'а для стримов до M21 | `internal/server/commands_keys.go` |
+| Приблизительная обрезка (`XTRIM … ~`) удаляет целыми блоками по 100 записей | в Redis блоки — это узлы rax (до 100 записей и 4 КБ), у нас единого узла нет | `internal/store/stream.go` (`approximateCut`) |
 | Нет команд с TTL полей хэша (`HEXPIRE`/`HTTL`/`HSETEX`) | требуют поддержки TTL полей в RDB, иначе данные терялись бы при сохранении | `docs/roadmap-m0-plus.md` (M11) |
 | `SORT` без `BY`/`GET` требует числовых элементов | как в Redis: иначе `ERR One or more scores can't be converted into double` | `internal/server/commands_keys.go` |
 | `SCAN`/`HSCAN`/… — курсор = индекс в отсортированный снимок | снимок строится заново на каждый вызов, O(n log n) | `internal/server/commands_scan.go` |
@@ -123,6 +126,25 @@ Dockerfile **не запушены в main**. Перед слиянием их �
   множество, `SDIFF`/`SINTER`/`SUNION` → множество, Pub/Sub → push-кадры.
 - `DUMP`/`RESTORE` у настоящего Redis: `RESTORE` без `REPLACE` на занятый
   ключ → `BUSYKEY Target key name already exists.`
+- **Streams** (Redis 8.2):
+  - идентификатор записи — `ms-seq`; `XADD` с явным `0-0` → `ERR The ID
+    specified in XADD must be greater than 0-0`; идентификатор должен быть
+    строго больше верхнего элемента, иначе `ERR The ID specified in XADD is
+    equal or smaller than the target stream top item`;
+  - `XADD key 5` (без `-seq`) допустим — это `5-0`; `XADD key 5-*` — авто-seq;
+    `ms-*` с миллисекундой **меньше** последней записи → ошибка;
+  - `XSETID` сравнивается с последней **записью**, а не с `lastID` (который
+    сам `XSETID` и поднимает): `XSETID s 100-0` потом `XSETID s 50-0` — ошибка
+    только если 50-0 меньше верхней записи;
+  - `XRANGE`/`XREVRANGE` отвечают массивом пар `[id, [f, v, f, v …]]`;
+    эксклюзивная граница — префикс `(`; `COUNT 0` → **null-массив**;
+  - маркеры `~`/`=` у `MAXLEN`/`MINID` распознаются, только если после них
+    есть значение; `LIMIT` без `~` → `ERR syntax error, LIMIT cannot be used
+    without the special ~ option`;
+  - приблизительная обрезка (`~`) в Redis удаляет целые узлы rax, поэтому её
+    результат зависит от раскладки — у нас тоже (блоки по 100 записей);
+  - в AOF попадает **фактический** идентификатор записи, а `~` переписывается
+    в `=` с получившейся длиной — иначе реплей дал бы другой поток.
 
 ## 6. Как проверять
 
@@ -151,4 +173,10 @@ redis-benchmark -p 6379 -t get,set -n 100000 -c 50 -P 50
   тест инвариантов реестра сам поймает забытую write-команду.
 - AOF: новая пишущая команда добавляется в `aofWriteCommands` (через реестр)
   и в разбор `internal/persist/aof.go` (`applyAOFCommand`).
+- Разбор аргументов команды, который нужен и серверу, и реплею AOF, живёт в
+  `internal/store` (как `ParseStreamAddArgs`/`ParseStreamTrimArgs`): пакет
+  `persist` не может импортировать `server` (цикл), а дублировать разбор
+  опасно.
 - Сценарий сверки: `testdata/compat/<family>.txt`, новые команды — туда же.
+  Проверять поведение лучше живым `redis-cli` против локального
+  `redis-server 8.2`: в zsh `~` и `*` expanding — кавычить (`"~"`, `"*"`).

@@ -100,6 +100,10 @@ func (s *Store) entryCostLocked(key string, e *Entry) int {
 		for m := range e.ZSet.dict {
 			cost += len(m) + elemOverhead
 		}
+	case TypeStream:
+		for _, entry := range e.Stream.entries {
+			cost += entryCost(entry)
+		}
 	}
 	return cost
 }

@@ -111,6 +111,21 @@ func copyEntry(e *Entry) *Entry {
 			z.Add(score, []byte(m))
 		}
 		out.ZSet = z
+	case TypeStream:
+		st := &Stream{
+			lastID:       e.Stream.lastID,
+			maxDeletedID: e.Stream.maxDeletedID,
+			entriesAdded: e.Stream.entriesAdded,
+			entries:      make([]StreamEntry, len(e.Stream.entries)),
+		}
+		for i, entry := range e.Stream.entries {
+			fields := make([][]byte, len(entry.Fields))
+			for j, f := range entry.Fields {
+				fields[j] = append([]byte(nil), f...)
+			}
+			st.entries[i] = StreamEntry{ID: entry.ID, Fields: fields}
+		}
+		out.Stream = st
 	}
 	return out
 }
@@ -202,6 +217,8 @@ func (s *Store) EntryEncoding(key []byte) (string, bool) {
 		return "intset", true
 	case TypeZSet:
 		return "listpack", true
+	case TypeStream:
+		return "stream", true
 	}
 	return "none", true
 }

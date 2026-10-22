@@ -175,6 +175,89 @@ func TestRewriteAOFFullDataset(t *testing.T) {
 	}
 }
 
+// TestAOFStreams checks that the stream commands survive a replay of the
+// append-only file.
+func TestAOFStreams(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "appendonly.aof")
+	a, err := OpenAppender(path, FsyncNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendCmds(t, a, [][][]byte{
+		{[]byte("XADD"), []byte("s"), []byte("1-0"), []byte("f"), []byte("v1")},
+		{[]byte("XADD"), []byte("s"), []byte("2-0"), []byte("f"), []byte("v2")},
+		{[]byte("XADD"), []byte("s"), []byte("3-0"), []byte("f"), []byte("v3")},
+		{[]byte("XDEL"), []byte("s"), []byte("2-0")},
+		{[]byte("XTRIM"), []byte("s"), []byte("MAXLEN"), []byte("="), []byte("1")},
+		{[]byte("XSETID"), []byte("s"), []byte("100-0")},
+	})
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st := store.New()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := LoadAOF(f, []*store.Store{st}); err != nil {
+		t.Fatalf("LoadAOF: %v", err)
+	}
+
+	if n, ok, err := st.StreamLen([]byte("s")); err != nil || !ok || n != 1 {
+		t.Errorf("stream length = %d ok=%v err=%v, want 1", n, ok, err)
+	}
+	entries, err := st.StreamRange([]byte("s"), store.StreamID{}, store.StreamMaxID, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID.MS != 3 {
+		t.Errorf("stream entries = %+v, want the entry 3-0", entries)
+	}
+	last, ok, err := st.StreamLastID([]byte("s"))
+	if err != nil || !ok || last.MS != 100 {
+		t.Errorf("stream last ID = %v ok=%v err=%v, want 100-0", last, ok, err)
+	}
+}
+
+// TestRewriteAOFStream checks that the rewrite of the append-only file
+// rebuilds the streams.
+func TestRewriteAOFStream(t *testing.T) {
+	st := store.New()
+	st.StreamAdd([]byte("s"), store.StreamIDExplicit, store.StreamID{MS: 1}, [][]byte{[]byte("f"), []byte("v1")}, false) //nolint:errcheck
+	st.StreamAdd([]byte("s"), store.StreamIDExplicit, store.StreamID{MS: 2}, [][]byte{[]byte("f"), []byte("v2")}, false) //nolint:errcheck
+
+	path := filepath.Join(t.TempDir(), "appendonly.aof")
+	if err := RewriteAOF(path, []*store.Store{st}, time.Now()); err != nil {
+		t.Fatalf("RewriteAOF: %v", err)
+	}
+
+	got := store.New()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := LoadAOF(f, []*store.Store{got}); err != nil {
+		t.Fatalf("LoadAOF after rewrite: %v", err)
+	}
+	entries, err := got.StreamRange([]byte("s"), store.StreamID{}, store.StreamMaxID, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	if entries[0].ID.MS != 1 || entries[1].ID.MS != 2 {
+		t.Errorf("got the entries %v and %v, want 1-0 and 2-0", entries[0].ID, entries[1].ID)
+	}
+	if string(entries[1].Fields[1]) != "v2" {
+		t.Errorf("got the value %q, want v2", entries[1].Fields[1])
+	}
+}
+
 func TestAppenderPolicies(t *testing.T) {
 	for _, p := range []FsyncPolicy{FsyncAlways, FsyncEverySec, FsyncNo} {
 		path := filepath.Join(t.TempDir(), "aof")

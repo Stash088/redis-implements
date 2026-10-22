@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/amir/redis-implements/internal/persist"
+	"github.com/amir/redis-implements/internal/store"
 )
 
 // StartSavePolicy launches a background goroutine that saves the RDB when at
@@ -45,7 +46,26 @@ func (s *Server) saveRDB() error {
 	if s.DBPath == "" {
 		return nil
 	}
+	if n := s.countStreamKeys(); n > 0 {
+		s.Logger.Printf("server: rdb: %d stream keys are not persisted (the RDB format of the streams arrives in M21), the AOF keeps them", n)
+	}
 	return persist.Save(s.DBPath, s.dbs)
+}
+
+// countStreamKeys returns the number of stream keys of the dataset. The
+// streams are not written to the RDB snapshots yet, so the caller warns about
+// them.
+func (s *Server) countStreamKeys() int {
+	n := 0
+	for _, db := range s.dbs {
+		db.ForEach(func(key string, e *store.Entry) error { //nolint:errcheck
+			if e.Type == store.TypeStream {
+				n++
+			}
+			return nil
+		})
+	}
+	return n
 }
 
 // Shutdown performs a final RDB save (if changes are pending) and closes the

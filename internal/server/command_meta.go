@@ -130,6 +130,15 @@ var commandMeta = map[string]cmdMeta{
 	"zpopmax":          {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "sorted-set", summary: "Remove and return members with the highest scores in a sorted set"},
 	"zscan":            {flags: []string{"readonly", "slow"}, firstKey: 1, lastKey: 1, step: 1, group: "sorted-set", summary: "Incrementally iterate sorted sets elements and associated scores"},
 
+	// Streams.
+	"xadd":      {flags: []string{"write", "denyoom", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Appends a new entry to a stream"},
+	"xlen":      {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return the number of entries in a stream"},
+	"xrange":    {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return a range of entries in a stream"},
+	"xrevrange": {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Return a range of entries in a stream, in reverse order"},
+	"xdel":      {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Removes the specified entries from the stream"},
+	"xtrim":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Trims the stream to (approximately) a certain size"},
+	"xsetid":    {flags: []string{"write", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "stream", summary: "Set the last delivered ID of a stream"},
+
 	// Pub/Sub.
 	"subscribe":    {flags: []string{"readonly", "pubsub", "fast"}, group: "pubsub", summary: "Listen for messages published to the given channels"},
 	"unsubscribe":  {flags: []string{"readonly", "pubsub", "fast"}, group: "pubsub", summary: "Stop listening for messages posted to the given channels"},

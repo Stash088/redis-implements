@@ -185,6 +185,8 @@ func encodingName(t store.Type) string {
 		return "intset"
 	case store.TypeZSet:
 		return "listpack"
+	case store.TypeStream:
+		return "stream"
 	}
 	return "none"
 }

@@ -189,6 +189,60 @@ func TestPersistenceAOFReload(t *testing.T) {
 	verifySampleData(t, addr2)
 }
 
+func TestPersistenceStreamAOFReload(t *testing.T) {
+	dir := t.TempDir()
+	addr, _, aofPath := startPersistServer(t, dir, true)
+	c := newClient(t, addr)
+	c.bulkWant("XADD", "s", "1-0", "f", "v1")
+	c.bulkWant("XADD", "s", "2-0", "f", "v2")
+	c.bulkWant("XADD", "s", "3-0", "f", "v3")
+	c.intWant("XDEL", "s", "2-0")
+	// Let the file settle, then reload from it.
+	time.Sleep(20 * time.Millisecond)
+	addr2 := startFromFiles(t, aofPath, true)
+
+	c2 := newClient(t, addr2)
+	if n := c2.intWant("XLEN", "s"); n != 2 {
+		t.Errorf("XLEN after the reload: got %d, want 2", n)
+	}
+	arr := c2.arrWant("XRANGE", "s", "-", "+")
+	if len(arr) != 2 {
+		t.Fatalf("XRANGE after the reload: got %d entries, want 2", len(arr))
+	}
+	if string(arr[0].Array[0].Str) != "1-0" || string(arr[1].Array[0].Str) != "3-0" {
+		t.Errorf("XRANGE after the reload: got %q and %q, want 1-0 and 3-0",
+			arr[0].Array[0].Str, arr[1].Array[0].Str)
+	}
+}
+
+// TestPersistenceStreamApproxTrimReload checks that a stream trimmed in an
+// approximate way is restored as it was: the AOF holds the exact trimming
+// that has the same effect.
+func TestPersistenceStreamApproxTrimReload(t *testing.T) {
+	dir := t.TempDir()
+	addr, _, aofPath := startPersistServer(t, dir, true)
+	c := newClient(t, addr)
+	for i := 1; i <= 5; i++ {
+		c.bulkWant("XADD", "s", string(rune('0'+i))+"-0", "f", "v")
+	}
+	c.bulkWant("XADD", "s", "MAXLEN", "~", "2", "6-0", "f", "v6")
+	before := c.arrWant("XRANGE", "s", "-", "+")
+	time.Sleep(20 * time.Millisecond)
+
+	addr2 := startFromFiles(t, aofPath, true)
+	c2 := newClient(t, addr2)
+	after := c2.arrWant("XRANGE", "s", "-", "+")
+	if len(before) != len(after) {
+		t.Fatalf("got %d entries after the reload, want %d", len(after), len(before))
+	}
+	for i := range before {
+		if string(before[i].Array[0].Str) != string(after[i].Array[0].Str) {
+			t.Errorf("entry %d: got %q after the reload, want %q",
+				i, after[i].Array[0].Str, before[i].Array[0].Str)
+		}
+	}
+}
+
 func TestPersistenceRDBViaSave(t *testing.T) {
 	dir := t.TempDir()
 	addr, dbPath, _ := startPersistServer(t, dir, false)
