@@ -5,22 +5,24 @@ import (
 	"time"
 )
 
-// Expirer runs periodic active-expiration passes against a Store.
+// Expirer runs periodic active-expiration passes against a set of Stores
+// (the server's databases).
 type Expirer struct {
-	store    *Store
+	stores   []*Store
 	interval time.Duration
 	stop     chan struct{}
 	done     chan struct{}
 }
 
 // NewExpirer returns an Expirer that will run every interval until Stop is
-// called. The caller must call Start to begin.
-func NewExpirer(s *Store, interval time.Duration) *Expirer {
+// called, expiring the keys of every given store. The caller must call Start
+// to begin.
+func NewExpirer(stores []*Store, interval time.Duration) *Expirer {
 	if interval <= 0 {
 		interval = 100 * time.Millisecond
 	}
 	return &Expirer{
-		store:    s,
+		stores:   stores,
 		interval: interval,
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -47,8 +49,10 @@ func (e *Expirer) run() {
 		case <-e.stop:
 			return
 		case <-ticker.C:
-			if removed := e.store.ExpireCycle(); removed > 0 {
-				log.Printf("store: expired %d key(s)", removed)
+			for _, st := range e.stores {
+				if removed := st.ExpireCycle(); removed > 0 {
+					log.Printf("store: expired %d key(s)", removed)
+				}
 			}
 		}
 	}

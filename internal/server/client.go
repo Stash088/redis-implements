@@ -36,6 +36,13 @@ type client struct {
 	done     chan struct{} // closed when the connection is gone; stops the pump
 	pumpOnce sync.Once
 
+	// Database selected with SELECT.
+	db int
+
+	// Protocol version negotiated with HELLO (2 or 3). It is read by other
+	// goroutines (the Pub/Sub hub), so it is accessed atomically.
+	proto atomic.Int32
+
 	// Transaction state.
 	inMulti  bool
 	queue    [][][]byte
@@ -54,7 +61,7 @@ type client struct {
 }
 
 func newClient(conn net.Conn) *client {
-	return &client{
+	c := &client{
 		id:       clientSeq.Add(1),
 		conn:     conn,
 		addr:     conn.RemoteAddr().String(),
@@ -65,7 +72,12 @@ func newClient(conn net.Conn) *client {
 		watched:  make(map[string]struct{}),
 		created:  time.Now(),
 	}
+	c.proto.Store(2)
+	return c
 }
+
+// Proto returns the protocol version negotiated with HELLO (2 or 3).
+func (c *client) Proto() int { return int(c.proto.Load()) }
 
 // startPump launches the push-message goroutine once. It drains msgCh and
 // writes each message to the connection under writeMu; it exits when the

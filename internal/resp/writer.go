@@ -3,6 +3,7 @@ package resp
 import (
 	"bufio"
 	"io"
+	"math"
 	"strconv"
 )
 
@@ -106,6 +107,69 @@ func (w *Writer) WriteArrayHeader(n int) error {
 	return w.writeLen('*', int64(n))
 }
 
+// WriteMapHeader writes the header "%N\r\n" of a RESP3 map with n key/value
+// pairs. The 2n elements must be written next.
+func (w *Writer) WriteMapHeader(n int) error {
+	return w.writeLen('%', int64(n))
+}
+
+// WriteSetHeader writes the header "~N\r\n" of a RESP3 set with n elements.
+func (w *Writer) WriteSetHeader(n int) error {
+	return w.writeLen('~', int64(n))
+}
+
+// WritePushHeader writes the header ">N\r\n" of a RESP3 push message.
+func (w *Writer) WritePushHeader(n int) error {
+	return w.writeLen('>', int64(n))
+}
+
+// WriteDouble writes a RESP3 double ",1.5\r\n". Infinities and NaN use the
+// spellings Redis uses.
+func (w *Writer) WriteDouble(f float64) error {
+	var s string
+	switch {
+	case math.IsNaN(f):
+		s = "nan"
+	case math.IsInf(f, 1):
+		s = "inf"
+	case math.IsInf(f, -1):
+		s = "-inf"
+	default:
+		s = strconv.FormatFloat(f, 'g', 17, 64)
+	}
+	if err := w.bw.WriteByte(','); err != nil {
+		return err
+	}
+	if _, err := w.bw.WriteString(s); err != nil {
+		return err
+	}
+	return w.writeCRLF()
+}
+
+// WriteBigNumber writes a RESP3 big number "(123...\r\n". The argument must
+// hold the decimal digits.
+func (w *Writer) WriteBigNumber(s string) error {
+	if err := w.bw.WriteByte('('); err != nil {
+		return err
+	}
+	if _, err := w.bw.WriteString(s); err != nil {
+		return err
+	}
+	return w.writeCRLF()
+}
+
+// WriteVerbatim writes a RESP3 verbatim string "=N\r\n<payload>\r\n". The
+// payload must include its format prefix ("txt:", "mkd:" or "json:").
+func (w *Writer) WriteVerbatim(s string) error {
+	if err := w.writeLen('=', int64(len(s))); err != nil {
+		return err
+	}
+	if _, err := w.bw.WriteString(s); err != nil {
+		return err
+	}
+	return w.writeCRLF()
+}
+
 // WriteValue writes any RESP value.
 func (w *Writer) WriteValue(v Value) error {
 	switch v.Kind {
@@ -130,6 +194,42 @@ func (w *Writer) WriteValue(v Value) error {
 			}
 		}
 		return nil
+	case KindMap:
+		if err := w.WriteMapHeader(len(v.Array) / 2); err != nil {
+			return err
+		}
+		for i := range v.Array {
+			if err := w.WriteValue(v.Array[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	case KindSet:
+		if err := w.WriteSetHeader(len(v.Array)); err != nil {
+			return err
+		}
+		for i := range v.Array {
+			if err := w.WriteValue(v.Array[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	case KindPush:
+		if err := w.WritePushHeader(len(v.Array)); err != nil {
+			return err
+		}
+		for i := range v.Array {
+			if err := w.WriteValue(v.Array[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	case KindDouble:
+		return w.WriteDouble(v.Float)
+	case KindBigNumber:
+		return w.WriteBigNumber(string(v.Str))
+	case KindVerbatim:
+		return w.WriteVerbatim(string(v.Str))
 	default:
 		return ErrInvalid
 	}

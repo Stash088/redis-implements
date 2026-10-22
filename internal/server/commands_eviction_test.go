@@ -17,7 +17,24 @@ import (
 // before serving, for maxmemory/slowlog configuration.
 func startServerWithLimits(t *testing.T, st *store.Store, fn func(s *server.Server)) string {
 	t.Helper()
-	srv, err := server.New("127.0.0.1:0", st)
+	srv, err := server.New("127.0.0.1:0", []*store.Store{st})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	srv.SetLogger(log.New(io.Discard, "", 0))
+	if fn != nil {
+		fn(srv)
+	}
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+	return srv.Addr().String()
+}
+
+// startServerWithLimitsDBs builds a server with several databases (no
+// expirer) and applies fn to it before serving.
+func startServerWithLimitsDBs(t *testing.T, dbs []*store.Store, fn func(s *server.Server)) string {
+	t.Helper()
+	srv, err := server.New("127.0.0.1:0", dbs)
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -153,5 +170,28 @@ func TestEvictionInsideMulti(t *testing.T) {
 	}
 	if v := c.cmd("GET", "big"); v.IsNull {
 		t.Error("GET big: null, want value")
+	}
+}
+
+// TestMaxmemoryIsGlobalAcrossDatabases checks that the maxmemory limit
+// covers all databases together, like Redis does.
+func TestMaxmemoryIsGlobalAcrossDatabases(t *testing.T) {
+	dbs := []*store.Store{store.New(), store.New()}
+	addr := startServerWithLimitsDBs(t, dbs, func(s *server.Server) {
+		s.SetMaxMemory(300)
+	})
+	c := newClient(t, addr)
+	val := string(make([]byte, 100))
+
+	// Fill the first database (2 keys x 102 bytes = 204 of the 300 limit).
+	c.ok("SET", "a", val)
+	c.ok("SET", "b", val)
+	// The second database shares the same budget: this write crosses it.
+	c.ok("SELECT", "1")
+	c.ok("SET", "c", val)
+	// The next write must be rejected: the total is over the limit.
+	v := c.cmd("SET", "d", val)
+	if v.Kind != resp.KindError || !bytes.HasPrefix(v.Str, []byte("OOM")) {
+		t.Fatalf("SET over the global limit: got %+v, want OOM error", v)
 	}
 }

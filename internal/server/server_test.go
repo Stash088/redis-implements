@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -23,9 +24,9 @@ func startTestServer(t *testing.T) string {
 func startTestServerStore(t *testing.T, st *store.Store, expirer bool) string {
 	t.Helper()
 	if expirer {
-		exp := store.NewExpirer(st, 10*time.Millisecond)
+		exp := store.NewExpirer([]*store.Store{st}, 10*time.Millisecond)
 		exp.Start()
-		srv, err := server.New("127.0.0.1:0", st)
+		srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 		if err != nil {
 			t.Fatalf("server.New: %v", err)
 		}
@@ -35,11 +36,31 @@ func startTestServerStore(t *testing.T, st *store.Store, expirer bool) string {
 		t.Cleanup(func() { srv.Close() })
 		return srv.Addr().String()
 	}
-	srv, err := server.New("127.0.0.1:0", st)
+	srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
 	srv.SetLogger(log.New(io.Discard, "", 0))
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+	return srv.Addr().String()
+}
+
+// startTestServerDBs runs a server with the given number of databases.
+func startTestServerDBs(t *testing.T, n int) string {
+	t.Helper()
+	dbs := make([]*store.Store, n)
+	for i := range dbs {
+		dbs[i] = store.New()
+	}
+	exp := store.NewExpirer(dbs, 10*time.Millisecond)
+	exp.Start()
+	srv, err := server.New("127.0.0.1:0", dbs)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	srv.SetLogger(log.New(io.Discard, "", 0))
+	srv.Expirer = exp
 	go srv.Serve()
 	t.Cleanup(func() { srv.Close() })
 	return srv.Addr().String()
@@ -446,5 +467,53 @@ func TestExpiredKeyGoneFromGet(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 	if v := c.cmd("GET", "temp"); !v.IsNil() {
 		t.Errorf("expected key to expire, got %+v", v)
+	}
+}
+
+// TestPipelinedBatch sends many commands in a single write and checks that
+// every answer comes back, in order. The server batches the replies of
+// pipelined commands into one write, so this also guards the flush logic.
+func TestPipelinedBatch(t *testing.T) {
+	addr := startTestServer(t)
+	c := newClient(t, addr)
+
+	const n = 50
+	for i := 0; i < n; i++ {
+		elems := []resp.Value{
+			resp.NewBulkString([]byte("SET")),
+			resp.NewBulkString([]byte(fmt.Sprintf("k%d", i))),
+			resp.NewBulkString([]byte(fmt.Sprintf("v%d", i))),
+		}
+		if err := c.w.WriteValue(resp.NewArray(elems)); err != nil {
+			t.Fatal(err)
+		}
+		// A GET in between makes the server interleave different reply
+		// types in the same batch.
+		elems = []resp.Value{
+			resp.NewBulkString([]byte("GET")),
+			resp.NewBulkString([]byte(fmt.Sprintf("k%d", i))),
+		}
+		if err := c.w.WriteValue(resp.NewArray(elems)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		v, err := c.r.ReadValue()
+		if err != nil {
+			t.Fatalf("read response %d: %v", i, err)
+		}
+		if v.Kind != resp.KindSimpleString || string(v.Str) != "OK" {
+			t.Fatalf("response %d: got %+v, want +OK", i, v)
+		}
+		v, err = c.r.ReadValue()
+		if err != nil {
+			t.Fatalf("read value %d: %v", i, err)
+		}
+		if got := string(v.Str); got != fmt.Sprintf("v%d", i) {
+			t.Errorf("value %d: got %q", i, got)
+		}
 	}
 }

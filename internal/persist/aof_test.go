@@ -46,7 +46,7 @@ func TestAOFAppendLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if err := LoadAOF(f, st); err != nil {
+	if err := LoadAOF(f, []*store.Store{st}); err != nil {
 		t.Fatalf("LoadAOF: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestAOFTruncatedTail(t *testing.T) {
 	f, _ := os.Open(path)
 	defer f.Close()
 	st := store.New()
-	if err := LoadAOF(f, st); err != nil {
+	if err := LoadAOF(f, []*store.Store{st}); err != nil {
 		t.Fatalf("truncated tail should load, got: %v", err)
 	}
 	if _, ok, _ := st.GetString([]byte("k1")); !ok {
@@ -139,7 +139,7 @@ func TestRewriteAOFFullDataset(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "appendonly.aof")
 	now := time.Now()
-	if err := RewriteAOF(path, st, now); err != nil {
+	if err := RewriteAOF(path, []*store.Store{st}, now); err != nil {
 		t.Fatalf("RewriteAOF: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestRewriteAOFFullDataset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if err := LoadAOF(f, got); err != nil {
+	if err := LoadAOF(f, []*store.Store{got}); err != nil {
 		t.Fatalf("LoadAOF after rewrite: %v", err)
 	}
 	if got.Len() != 6 {

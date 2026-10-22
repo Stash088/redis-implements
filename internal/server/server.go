@@ -27,12 +27,19 @@ type Ctx struct {
 	Client *client
 }
 
+// proto3 reports whether the client speaks RESP3.
+func (c *Ctx) proto3() bool {
+	return c.Client != nil && c.Client.Proto() >= 3
+}
+
 // Handler implements a single Redis command.
 type Handler func(*Ctx) error
 
-// Server is a TCP server that speaks the RESP protocol against a store.
+// Server is a TCP server that speaks the RESP protocol against a set of
+// keyspaces (the Redis databases). Each client selects its current database
+// with SELECT; commands always run against the client's database.
 type Server struct {
-	Store   *store.Store
+	dbs     []*store.Store
 	Expirer *store.Expirer
 	AOF     *persist.Appender
 	PubSub  *PubSub
@@ -105,7 +112,7 @@ func (s *Server) propagateFromDispatch(args [][]byte) {
 	if s.AOF == nil {
 		return
 	}
-	for _, c := range persist.RewriteForAOF(args, s.Store.Now()) {
+	for _, c := range persist.RewriteForAOF(args, s.dbs[0].Now()) {
 		if err := s.AOF.Append(c); err != nil {
 			s.Logger.Printf("server: aof append: %v", err)
 		}
@@ -119,15 +126,19 @@ func (s *Server) SetLogger(l *log.Logger) {
 	}
 }
 
-// New creates a Server bound to the given address. The listener is not
+// New creates a Server bound to the given address, serving the given
+// databases (the first one is the default database). The listener is not
 // opened until Listen is called.
-func New(addr string, st *store.Store) (*Server, error) {
+func New(addr string, dbs []*store.Store) (*Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	if len(dbs) == 0 {
+		dbs = []*store.Store{store.New()}
+	}
 	s := &Server{
-		Store:   st,
+		dbs:     dbs,
 		Logger:  log.Default(),
 		cmds:    make(map[string]cmdSpec),
 		conns:   make(map[net.Conn]struct{}),
@@ -172,6 +183,27 @@ func (s *Server) maxMemoryPolicyName() string {
 
 // Addr returns the bound listener address (useful with port 0).
 func (s *Server) Addr() net.Addr { return s.ln.Addr() }
+
+// DB returns the store of the database with the given index. Out-of-range
+// indexes fall back to the first database.
+func (s *Server) DB(i int) *store.Store {
+	if i < 0 || i >= len(s.dbs) {
+		return s.dbs[0]
+	}
+	return s.dbs[i]
+}
+
+// DBCount returns the number of databases.
+func (s *Server) DBCount() int { return len(s.dbs) }
+
+// usedBytes returns the approximate memory footprint of all databases.
+func (s *Server) usedBytes() int {
+	n := 0
+	for _, db := range s.dbs {
+		n += db.UsedBytes()
+	}
+	return n
+}
 
 // Close stops the server and closes all active connections.
 func (s *Server) Close() error {
@@ -224,7 +256,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		s.mu.Unlock()
 		atomic.AddInt64(&s.connsNum, -1)
 		s.PubSub.removeClient(c)
-		c.unwatchAll(s.Store)
+		c.unwatchAll(s.DB(c.db))
 		close(c.done)
 		conn.Close()
 		s.Logger.Printf("server: client disconnected: %s", conn.RemoteAddr())
@@ -235,6 +267,20 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 	w := resp.NewWriter(conn)
 
 	for {
+		// Send the answers we owe the client before blocking on the socket.
+		// When more pipelined commands are already buffered the replies stay
+		// in the write buffer and leave in a single write, so a pipeline of
+		// N commands costs one syscall instead of N.
+		c.writeMu.Lock()
+		if !r.HasBufferedValue() {
+			if err := w.Flush(); err != nil {
+				c.writeMu.Unlock()
+				s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+				return
+			}
+		}
+		c.writeMu.Unlock()
+
 		v, err := r.ReadValue()
 		if err != nil {
 			if err != io.EOF {
@@ -243,28 +289,34 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			return
 		}
 		if v.Kind != resp.KindArray || v.IsNull {
+			c.writeMu.Lock()
 			w.WriteError("ERR Protocol error: expected command array")
 			w.Flush()
+			c.writeMu.Unlock()
 			return
 		}
 		args := make([][]byte, 0, len(v.Array))
 		for i := range v.Array {
 			el := v.Array[i]
 			if el.Kind != resp.KindBulkString || el.IsNull {
+				c.writeMu.Lock()
 				w.WriteError("ERR Protocol error: command arguments must be bulk strings")
 				w.Flush()
+				c.writeMu.Unlock()
 				return
 			}
 			args = append(args, el.Str)
 		}
 		if len(args) == 0 {
+			c.writeMu.Lock()
 			w.WriteError("ERR empty command")
 			w.Flush()
+			c.writeMu.Unlock()
 			continue
 		}
 
 		atomic.AddUint64(&s.received, 1)
-		ctx := &Ctx{Store: s.Store, Args: args, W: w, Srv: s, Client: c}
+		ctx := &Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
 		name := strings.ToLower(string(args[0]))
 
 		// The Pub/Sub pump goroutine shares the connection's bufio with the
@@ -290,11 +342,6 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			c.writeMu.Unlock()
 			return
 		}
-		if err := w.Flush(); err != nil {
-			c.writeMu.Unlock()
-			s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
-			return
-		}
 		c.writeMu.Unlock()
 	}
 }
@@ -310,7 +357,7 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 	// Deny memory-adding commands under noeviction once the store is over
 	// the limit, like Redis.
 	if m := s.maxMemory.Load(); m > 0 && spec.memAdd && s.maxMemoryPolicyName() == "noeviction" {
-		if int64(s.Store.UsedBytes()) > m {
+		if int64(s.usedBytes()) > m {
 			return ctx.W.WriteError("OOM command not allowed when used memory > 'maxmemory'.")
 		}
 	}
@@ -323,8 +370,8 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 		s.dirty.Add(1)
 		// Evict only when a policy is configured; noeviction is handled by
 		// the pre-execution check above.
-		if m := s.maxMemory.Load(); m > 0 && s.maxMemoryPolicyName() != "noeviction" && int64(s.Store.UsedBytes()) > m {
-			if n := s.Store.EvictCycle(s.maxMemoryPolicyName(), int(s.maxMemorySamples.Load()), m); n > 0 {
+		if m := s.maxMemory.Load(); m > 0 && s.maxMemoryPolicyName() != "noeviction" && int64(s.usedBytes()) > m {
+			if n := s.evictCycle(m); n > 0 {
 				s.evicted.Add(uint64(n))
 			}
 		}

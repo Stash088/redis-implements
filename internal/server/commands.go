@@ -100,6 +100,14 @@ func (s *Server) registerCommands() {
 	s.reg("SAVE", 1, cmdSave)
 	s.reg("BGSAVE", -1, cmdBGSAVE)
 	s.reg("BGREWRITEAOF", 1, cmdBGREWRITEAOF)
+
+	// Protocol negotiation.
+	s.reg("HELLO", -1, cmdHello)
+
+	// Database commands. SELECT only changes the connection's database, so it
+	// propagates itself to the AOF and does not dirty the dataset.
+	s.reg("SELECT", 2, cmdSelect)
+	s.regW("FLUSHALL", -1, cmdFlushAll)
 }
 
 // cmdSpec describes a single command: its handler and its metadata.
@@ -377,7 +385,10 @@ func cmdInfo(ctx *Ctx) error {
 	fmt.Fprintf(&b, "pubsub_messages:%d\r\n", s.PubSub.Messages())
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Keyspace\r\n")
-	fmt.Fprintf(&b, "db0:keys=%d,expires=%d,avg_ttl=0\r\n", ctx.Store.Len(), 0)
+	for i, db := range s.dbs {
+		keys, expires := db.Stats()
+		fmt.Fprintf(&b, "db%d:keys=%d,expires=%d,avg_ttl=0\r\n", i, keys, expires)
+	}
 	return ctx.W.WriteBulkString([]byte(b.String()))
 }
 

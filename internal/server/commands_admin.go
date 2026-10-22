@@ -173,7 +173,12 @@ func configGet(ctx *Ctx, pattern string) error {
 		}
 	}
 	w := ctx.W
-	if err := w.WriteArrayHeader(len(out) * 2); err != nil {
+	// In RESP3 the parameters come as a map, in RESP2 as a flat array.
+	if ctx.proto3() {
+		if err := w.WriteMapHeader(len(out)); err != nil {
+			return err
+		}
+	} else if err := w.WriteArrayHeader(len(out) * 2); err != nil {
 		return err
 	}
 	for _, p := range out {
@@ -286,8 +291,8 @@ func writeClientList(ctx *Ctx) error {
 	for i, c := range clients {
 		inMulti, watchCount := c.txnState()
 		sub, psub := s.PubSub.clientSubs(c)
-		fmt.Fprintf(&b, "id=%d addr=%s name=%s age=%d db=0 sub=%d psub=%d multi=%d watch=%d cmd=%s",
-			c.id, c.addr, c.getName(), int64(now.Sub(c.created).Seconds()),
+		fmt.Fprintf(&b, "id=%d addr=%s name=%s age=%d db=%d sub=%d psub=%d multi=%d watch=%d cmd=%s",
+			c.id, c.addr, c.getName(), int64(now.Sub(c.created).Seconds()), c.db,
 			sub, psub, inMulti, watchCount, c.lastCmd)
 		if i < len(clients)-1 {
 			b.WriteString("\n")

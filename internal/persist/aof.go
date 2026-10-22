@@ -183,10 +183,12 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 	}
 }
 
-// LoadAOF replays a RESP command log into st. A truncated trailing command is
-// tolerated; other read errors abort the load.
-func LoadAOF(r io.Reader, st *store.Store) error {
+// LoadAOF replays a RESP command log into the given stores. A SELECT command
+// switches the target database, like Redis does. A truncated trailing command
+// is tolerated; other read errors abort the load.
+func LoadAOF(r io.Reader, stores []*store.Store) error {
 	rd := resp.NewReader(r)
+	cur := 0
 	for {
 		v, err := rd.ReadValue()
 		if err != nil {
@@ -206,7 +208,26 @@ func LoadAOF(r io.Reader, st *store.Store) error {
 			}
 			args = append(args, el.Str)
 		}
-		if err := applyAOFCommand(st, args); err != nil {
+		if cur >= len(stores) {
+			cur = 0
+		}
+		if len(args) > 0 && strings.EqualFold(string(args[0]), "flushall") {
+			for _, st := range stores {
+				st.Flush()
+			}
+			continue
+		}
+		if len(args) > 0 && strings.EqualFold(string(args[0]), "select") {
+			n, err := strconv.Atoi(string(args[1]))
+			if err != nil {
+				return fmt.Errorf("persist: aof: bad SELECT index")
+			}
+			if n >= 0 && n < len(stores) {
+				cur = n
+			}
+			continue
+		}
+		if err := applyAOFCommand(stores[cur], args); err != nil {
 			return err
 		}
 	}
@@ -350,20 +371,34 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 }
 
 // RewriteAOF writes a compact command stream representing the current dataset
-// to path (atomically). The stream starts with FLUSHDB so replay produces the
+// to path (atomically). The stream starts with FLUSHALL so replay produces the
 // dataset regardless of prior state.
-func RewriteAOF(path string, st *store.Store, now time.Time) error {
+func RewriteAOF(path string, stores []*store.Store, now time.Time) error {
 	var buf bytes.Buffer
-	if err := DatasetCommands(&buf, st, now); err != nil {
+	if err := DatasetCommands(&buf, stores, now); err != nil {
 		return err
 	}
 	return writeFileAtomic(path, buf.Bytes())
 }
 
-// DatasetCommands writes the command stream that rebuilds st (starting with
-// FLUSHDB) into w.
-func DatasetCommands(w io.Writer, st *store.Store, now time.Time) error {
-	if _, err := w.Write(EncodeCommand([][]byte{[]byte("FLUSHDB")})); err != nil {
+// DatasetCommands writes the command stream that rebuilds the given stores
+// (starting with FLUSHALL) into w. Every database is preceded by a SELECT,
+// so the replay restores all of them.
+func DatasetCommands(w io.Writer, stores []*store.Store, now time.Time) error {
+	if _, err := w.Write(EncodeCommand([][]byte{[]byte("FLUSHALL")})); err != nil {
+		return err
+	}
+	for i, st := range stores {
+		if err := datasetCommandsFor(w, st, i, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// datasetCommandsFor writes the commands that rebuild a single database.
+func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) error {
+	if _, err := w.Write(EncodeCommand([][]byte{[]byte("SELECT"), []byte(strconv.Itoa(db))})); err != nil {
 		return err
 	}
 	return st.ForEach(func(key string, e *store.Entry) error {

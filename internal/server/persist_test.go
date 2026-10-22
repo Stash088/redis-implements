@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,9 +20,9 @@ import (
 func startPersistServer(t *testing.T, dir string, enableAOF bool) (string, string, string) {
 	t.Helper()
 	st := store.New()
-	exp := store.NewExpirer(st, 10*time.Millisecond)
+	exp := store.NewExpirer([]*store.Store{st}, 10*time.Millisecond)
 	exp.Start()
-	srv, err := server.New("127.0.0.1:0", st)
+	srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -43,6 +44,73 @@ func startPersistServer(t *testing.T, dir string, enableAOF bool) (string, strin
 	return srv.Addr().String(), dbPath, aofPath
 }
 
+// startPersistServerDBs starts a server with n databases and persistence
+// paths configured.
+func startPersistServerDBs(t *testing.T, dir string, enableAOF bool, n int) (string, string, string) {
+	t.Helper()
+	dbs := make([]*store.Store, n)
+	for i := range dbs {
+		dbs[i] = store.New()
+	}
+	exp := store.NewExpirer(dbs, 10*time.Millisecond)
+	exp.Start()
+	srv, err := server.New("127.0.0.1:0", dbs)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	srv.SetLogger(log.New(io.Discard, "", 0))
+	srv.Expirer = exp
+	dbPath := filepath.Join(dir, "dump.rdb")
+	aofPath := filepath.Join(dir, "appendonly.aof")
+	srv.DBPath = dbPath
+	if enableAOF {
+		a, err := persist.OpenAppender(aofPath, persist.FsyncNo)
+		if err != nil {
+			t.Fatalf("open aof: %v", err)
+		}
+		srv.AOF = a
+		srv.AOFPath = aofPath
+	}
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+	return srv.Addr().String(), dbPath, aofPath
+}
+
+// startFromFilesDBs starts a fresh server with n databases whose stores are
+// loaded from the given persistence file (AOF when loadAOF, else RDB).
+func startFromFilesDBs(t *testing.T, path string, loadAOF bool, n int) string {
+	t.Helper()
+	dbs := make([]*store.Store, n)
+	for i := range dbs {
+		dbs[i] = store.New()
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	if loadAOF {
+		if err := persist.LoadAOF(f, dbs); err != nil {
+			t.Fatalf("load aof: %v", err)
+		}
+	} else {
+		if err := persist.Load(f, dbs); err != nil {
+			t.Fatalf("load rdb: %v", err)
+		}
+	}
+	exp := store.NewExpirer(dbs, 10*time.Millisecond)
+	exp.Start()
+	srv, err := server.New("127.0.0.1:0", dbs)
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	srv.SetLogger(log.New(io.Discard, "", 0))
+	srv.Expirer = exp
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+	return srv.Addr().String()
+}
+
 // startFromFiles starts a fresh server whose store is loaded from the given
 // persistence file (AOF when loadAOF, else RDB).
 func startFromFiles(t *testing.T, path string, loadAOF bool) string {
@@ -54,17 +122,17 @@ func startFromFiles(t *testing.T, path string, loadAOF bool) string {
 	}
 	defer f.Close()
 	if loadAOF {
-		if err := persist.LoadAOF(f, st); err != nil {
+		if err := persist.LoadAOF(f, []*store.Store{st}); err != nil {
 			t.Fatalf("load aof: %v", err)
 		}
 	} else {
-		if err := persist.Load(f, st); err != nil {
+		if err := persist.Load(f, []*store.Store{st}); err != nil {
 			t.Fatalf("load rdb: %v", err)
 		}
 	}
-	exp := store.NewExpirer(st, 10*time.Millisecond)
+	exp := store.NewExpirer([]*store.Store{st}, 10*time.Millisecond)
 	exp.Start()
-	srv, err := server.New("127.0.0.1:0", st)
+	srv, err := server.New("127.0.0.1:0", []*store.Store{st})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -206,5 +274,59 @@ func TestPersistenceSAVEDisabledError(t *testing.T) {
 	c := newClient(t, addr)
 	if v := c.cmd("SAVE"); v.Kind != resp.KindError {
 		t.Errorf("expected error when persistence disabled, got %v", v)
+	}
+}
+
+// TestPersistenceMultipleDatabases checks that the databases survive a
+// restart: the RDB stores them under their own SELECTDB opcode and the AOF
+// records the SELECT commands.
+func TestPersistenceMultipleDatabases(t *testing.T) {
+	for _, mode := range []string{"rdb", "aof"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			useAOF := mode == "aof"
+			addr, dbPath, aofPath := startPersistServerDBs(t, dir, useAOF, 3)
+			c := newClient(t, addr)
+			c.ok("SET", "k", "db0")
+			c.ok("SELECT", "1")
+			c.ok("SET", "k", "db1")
+			c.ok("SELECT", "2")
+			c.ok("SET", "k", "db2")
+
+			path := dbPath
+			if useAOF {
+				path = aofPath
+				time.Sleep(20 * time.Millisecond)
+			} else {
+				c.ok("SAVE")
+			}
+
+			addr2 := startFromFilesDBs(t, path, useAOF, 3)
+			c2 := newClient(t, addr2)
+			for db, want := range []string{"db0", "db1", "db2"} {
+				c2.ok("SELECT", strconv.Itoa(db))
+				if got := string(c2.bulkWant("GET", "k")); got != want {
+					t.Errorf("db%d after reload: got %q, want %q", db, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestPersistenceDatabaseCount checks that a snapshot with more databases
+// than the server has does not break the load: the extra ones are ignored.
+func TestPersistenceDatabaseCount(t *testing.T) {
+	dir := t.TempDir()
+	addr, dbPath, _ := startPersistServerDBs(t, dir, false, 3)
+	c := newClient(t, addr)
+	c.ok("SELECT", "2")
+	c.ok("SET", "k", "db2")
+	c.ok("SAVE")
+
+	// Reload into a server with a single database.
+	addr2 := startFromFilesDBs(t, dbPath, false, 1)
+	c2 := newClient(t, addr2)
+	if v := c2.cmd("DBSIZE"); v.Kind != resp.KindInteger || v.Int != 0 {
+		t.Errorf("DBSIZE in a 1-database server: got %v, want 0", v)
 	}
 }

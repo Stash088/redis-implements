@@ -5,6 +5,7 @@
 ## Возможности
 
 - **Протокол RESP** — полный парсер и сериализатор: simple strings, errors, integers, bulk strings, arrays, null-значения. Буферизованное чтение, лимиты на размер сообщений, защита от malformed-ввода.
+- **RESP3** — `HELLO 3` переключает соединение на RESP3: карты, множества, double, big number, verbatim string, push-кадры. Проверено живым клиентом redis-py.
 - **Типизированное хранилище** — `string`, `list`, `hash`, `set`, `zset` с проверкой типов и ошибкой `-WRONGTYPE`.
 - **Структуры данных**:
   - `list` — собственный двусвязный список (O(1) push/pop с обоих концов);
@@ -19,6 +20,8 @@
   `allkeys-random`, `volatile-random`, `volatile-ttl` и сэмплированием (`--maxmemory-samples`).
 - **Персистентность** — RDB-снапшоты в **настоящем формате Redis** (интероп с реальным `redis-server`),
   AOF-журнал команд с переписью TTL, `SAVE`/`BGSAVE`/`BGREWRITEAOF`.
+- **Мульти-БД** — `SELECT` переключает базу на соединении (16 баз по умолчанию,
+  `--databases N`); изоляция баз, общий лимит `maxmemory`, RDB/AOF хранят все базы.
 - **Диагностика** — `KEYS`/`SCAN` (курсор + `MATCH`/`COUNT`), `CONFIG GET/SET`, `CLIENT ID/LIST/SETNAME/GETNAME`,
   `SLOWLOG GET/LEN/RESET` с настраиваемым порогом.
 - **Конкурентность** — горутина на каждое соединение + `RWMutex` на хранилище; все тесты гоняются с `-race`.
@@ -35,6 +38,9 @@ go run ./cmd/redis-server --host 0.0.0.0 --port 6380
 
 # С персистентностью (RDB по политике --save, AOF включён)
 go run ./cmd/redis-server --dir ./data --save 60 --save-changes 1000 --appendonly
+
+# Число баз данных (по умолчанию 16)
+go run ./cmd/redis-server --databases 4
 
 # С ограничением памяти и eviction
 go run ./cmd/redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -53,6 +59,11 @@ redis-cli SADD st m1 m2           # 2
 redis-cli ZADD z 1 a 2 b 3 c      # 3
 redis-cli ZRANGE z 0 -1 WITHSCORES
 redis-cli TYPE foo                # string
+
+# Несколько баз данных
+redis-cli -n 3 SET k v            # записать в базу 3
+redis-cli -n 3 GET k              # прочитать из базы 3
+redis-cli SELECT 3                # переключить базу вручную
 ```
 
 ## Развёртывание в Docker / на VPS
@@ -105,7 +116,9 @@ RESP `PING` через busybox `nc`.
 
 | Категория | Команды |
 |---|---|
-| Общие | `PING`, `ECHO`, `QUIT`, `DEL`, `EXISTS`, `TYPE`, `DBSIZE`, `FLUSHDB`, `INFO` |
+| Общие | `PING`, `ECHO`, `QUIT`, `DEL`, `EXISTS`, `TYPE`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`, `INFO` |
+| Протокол | `HELLO` |
+| Базы данных | `SELECT` |
 | Ключи / TTL | `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `KEYS`, `SCAN` (MATCH/COUNT) |
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY` |
@@ -248,6 +261,7 @@ go tool pprof -web cpu.prof          # визуальная диаграмма
 - [x] Совместимость с `redis-cli`/`redis-benchmark` + бенчмарки/pprof
 - [x] Персистентность: RDB (настоящий формат) и AOF
 - [x] Pub/Sub, транзакции MULTI/EXEC/WATCH, eviction, KEYS/SCAN/CONFIG/CLIENT/SLOWLOG
+- [x] Мульти-БД: SELECT, FLUSHALL, изоляция баз, общий maxmemory, RDB/AOF по всем базам
 - [ ] Репликация, кластер, Lua-скриптинг, Streams, TLS
 
 ## Зачем это

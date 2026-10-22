@@ -72,18 +72,34 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
 - [ ] Разбить `Store.data` на N шардов по хешу ключа, чтобы снять глобальный
       потолок. Риск для `WATCH`/eviction/персистентности — нужен отдельный замер.
 
-### ⏳ M3 — `SELECT` и мульти-БД
+### ✅ M3 — `SELECT` и мульти-БД
 
-- [ ] `Server.dbs []*store.Store` (16 по умолчанию), `client.db int`,
-      `Ctx.Store` → `Ctx.DB()`; флаг `--databases`.
-- [ ] Персистентность: RDB писать/читать `SELECTDB` для каждой БД, AOF писать
-      `SELECT` при смене БД.
+- [x] `Server.dbs []*store.Store` (16 по умолчанию, флаг `--databases`),
+      `client.db int`; `Ctx.Store` подставляется per-команду из БД клиента,
+      поэтому обработчики команд не изменились.
+- [x] Команда `SELECT` (выбор БД на соединение) и `FLUSHALL`; `INFO` показывает
+      секцию `# Keyspace` по всем БД; `CLIENT LIST` — поле `db=`.
+- [x] Персистентность: RDB пишет `SELECTDB` перед каждой БД и читает их обратно
+      (настоящий Redis 8.2 читает наш дамп с несколькими БД — проверено);
+      AOF пишет `SELECT` при смене БД и `FLUSHALL` при переписывании.
+- [x] `maxmemory` теперь общий для всех БД: бюджет делится между базами
+      пропорционально их размеру.
+- [x] БД, которых нет в дампе, пропускаются при загрузке (как в Redis).
 
-### ⏳ M4 — `HELLO` + RESP3
+### ✅ M4 — `HELLO` + RESP3
 
-- [ ] `internal/resp`: типы map (`%`), set (`~`), double (`,`), big number (`(`),
-      verbatim (`=`), push (`>`); big number → int128 через `math/big`.
-- [ ] Версия протокола на клиента; в RESP3 push-сообщения Pub/Sub.
+- [x] `internal/resp`: типы map (`%`), set (`~`), double (`,`), big number (`(`),
+      verbatim (`=`), push (`>`) — чтение и запись, с тестами round-trip.
+- [x] `HELLO [2|3]` переключает протокол соединения; в RESP3 ответ — карта, в
+      RESP2 — плоский массив; неподдерживаемая версия → `NOPROTO`.
+- [x] Различия ответов RESP3, как в Redis: `HGETALL` → карта, `CONFIG GET` →
+      карта, `SMEMBERS` → множество, `ZSCORE` → double, `ZRANGE WITHSCORES` →
+      массив пар `[member, double]`, Pub/Sub → push-кадры.
+- [x] Проверено живым клиентом **redis-py 8.1** (`protocol=3`): ping/set/get,
+      zrange withscores, hgetall, smembers, config_get, pipeline, info, scan —
+      всё работает.
+- [x] Попутно исправлен `HSET` с несколькими парами поле-значение (как в
+      Redis 4+), который раньше отвечал ошибкой.
 
 ### ⏳ M5 — `AUTH` / `--requirepass`
 

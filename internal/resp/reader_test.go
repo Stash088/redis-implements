@@ -242,3 +242,137 @@ func TestReaderMissingCRLF(t *testing.T) {
 		t.Errorf("expected error for missing CR")
 	}
 }
+
+func TestValueLen(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"+OK\r\n", 5},
+		{"-ERR bad\r\n", 10},
+		{":42\r\n", 5},
+		{"$3\r\nabc\r\n", 9},
+		{"$0\r\n\r\n", 6},
+		{"$-1\r\n", 5},
+		{"*2\r\n$1\r\na\r\n$1\r\nb\r\n", 18},
+		{"*-1\r\n", 5},
+		{"*0\r\n", 4},
+		// Fragments: the value is not complete yet.
+		{"", 0},
+		{"+OK", 0},
+		{"+OK\r", 0},
+		{"$3\r\nab", 0},
+		{"$3\r\nabc", 0},
+		{"*2\r\n$1\r\na\r\n", 0},
+		{"*1\r\n", 0},
+		{"?bad\r\n", 0},
+	}
+	for _, c := range cases {
+		if got := valueLen([]byte(c.in)); got != c.want {
+			t.Errorf("valueLen(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestHasBufferedValue(t *testing.T) {
+	// A complete command in the buffer is detected...
+	r := NewReader(strings.NewReader("*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n"))
+	if r.HasBufferedValue() {
+		t.Error("empty buffer: want no buffered value")
+	}
+	if _, err := r.ReadValue(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.HasBufferedValue() {
+		t.Error("second pipelined command is buffered: want a buffered value")
+	}
+
+	// ...and a fragment of one is not.
+	r2 := NewReader(strings.NewReader("*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPI"))
+	if _, err := r2.ReadValue(); err != nil {
+		t.Fatal(err)
+	}
+	if r2.HasBufferedValue() {
+		t.Error("fragmentary command: want no buffered value")
+	}
+}
+
+func TestReaderRESP3Types(t *testing.T) {
+	// Map: a count of pairs followed by the elements.
+	m := decode(t, "%2\r\n$1\r\na\r\n:1\r\n$1\r\nb\r\n:2\r\n")
+	if m.Kind != KindMap || len(m.Array) != 4 {
+		t.Fatalf("map: got %+v", m)
+	}
+	if m.Array[1].Int != 1 {
+		t.Errorf("map value: got %+v", m.Array[1])
+	}
+
+	// Set.
+	s := decode(t, "~2\r\n$1\r\na\r\n$1\r\nb\r\n")
+	if s.Kind != KindSet || len(s.Array) != 2 {
+		t.Fatalf("set: got %+v", s)
+	}
+
+	// Double.
+	d := decode(t, ",1.5\r\n")
+	if d.Kind != KindDouble || d.Float != 1.5 {
+		t.Fatalf("double: got %+v", d)
+	}
+
+	// Big number.
+	bn := decode(t, "(3492890328409238509324850943850943825024385\r\n")
+	if bn.Kind != KindBigNumber || string(bn.Str) != "3492890328409238509324850943850943825024385" {
+		t.Fatalf("big number: got %+v", bn)
+	}
+
+	// Verbatim string.
+	vb := decode(t, "=9\r\ntxt:hello\r\n")
+	if vb.Kind != KindVerbatim || string(vb.Str) != "txt:hello" {
+		t.Fatalf("verbatim: got %+v", vb)
+	}
+
+	// Push.
+	p := decode(t, ">2\r\n$7\r\nmessage\r\n$2\r\nch\r\n")
+	if p.Kind != KindPush || len(p.Array) != 2 {
+		t.Fatalf("push: got %+v", p)
+	}
+}
+
+func TestWriterRESP3Types(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.WriteValue(NewMap([]Value{
+		NewBulkString([]byte("a")), NewInteger(1),
+		NewBulkString([]byte("b")), NewInteger(2),
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteValue(NewSet([]Value{NewBulkString([]byte("x"))})); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteValue(NewDouble(1.5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteValue(NewBigNumber("12345678901234567890")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteValue(NewVerbatim("txt:hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteValue(NewPush([]Value{NewBulkString([]byte("m"))})); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "%2\r\n$1\r\na\r\n:1\r\n$1\r\nb\r\n:2\r\n" +
+		"~1\r\n$1\r\nx\r\n" +
+		",1.5\r\n" +
+		"(12345678901234567890\r\n" +
+		"=9\r\ntxt:hello\r\n" +
+		">1\r\n$1\r\nm\r\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

@@ -125,13 +125,8 @@ func (ps *PubSub) publish(channel string, payload []byte) int {
 	ps.messages.Add(1)
 	count := 0
 	if subs, ok := ps.channels[channel]; ok {
-		frame := resp.NewArray([]resp.Value{
-			resp.NewBulkString([]byte("message")),
-			resp.NewBulkString([]byte(channel)),
-			resp.NewBulkString(payload),
-		})
 		for c := range subs {
-			if deliver(c, frame) {
+			if deliver(c, messageFrame(c.Proto(), channel, payload)) {
 				count++
 			}
 		}
@@ -140,19 +135,41 @@ func (ps *PubSub) publish(channel string, payload []byte) int {
 		if !globMatch(pattern, channel) {
 			continue
 		}
-		frame := resp.NewArray([]resp.Value{
-			resp.NewBulkString([]byte("pmessage")),
-			resp.NewBulkString([]byte(pattern)),
-			resp.NewBulkString([]byte(channel)),
-			resp.NewBulkString(payload),
-		})
 		for c := range subs {
-			if deliver(c, frame) {
+			if deliver(c, pmessageFrame(c.Proto(), pattern, channel, payload)) {
 				count++
 			}
 		}
 	}
 	return count
+}
+
+// messageFrame builds a published-message frame. In RESP3 it is a push
+// message, in RESP2 a plain array.
+func messageFrame(proto int, channel string, payload []byte) resp.Value {
+	elems := []resp.Value{
+		resp.NewBulkString([]byte("message")),
+		resp.NewBulkString([]byte(channel)),
+		resp.NewBulkString(payload),
+	}
+	if proto >= 3 {
+		return resp.NewPush(elems)
+	}
+	return resp.NewArray(elems)
+}
+
+// pmessageFrame builds a pattern-message frame.
+func pmessageFrame(proto int, pattern, channel string, payload []byte) resp.Value {
+	elems := []resp.Value{
+		resp.NewBulkString([]byte("pmessage")),
+		resp.NewBulkString([]byte(pattern)),
+		resp.NewBulkString([]byte(channel)),
+		resp.NewBulkString(payload),
+	}
+	if proto >= 3 {
+		return resp.NewPush(elems)
+	}
+	return resp.NewArray(elems)
 }
 
 // Counts returns the number of active channels and patterns.

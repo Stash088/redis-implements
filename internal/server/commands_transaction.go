@@ -87,7 +87,9 @@ func cmdExec(ctx *Ctx) error {
 	for _, args := range queue {
 		var buf bytes.Buffer
 		ew := resp.NewWriter(&buf)
-		ec := &Ctx{Store: ctx.Store, Args: args, W: ew, Srv: ctx.Srv, Client: c}
+		// The store is resolved per command: a queued SELECT switches the
+		// database for the commands that follow it.
+		ec := &Ctx{Store: ctx.Srv.DB(c.db), Args: args, W: ew, Srv: ctx.Srv, Client: c}
 		err := ctx.Srv.executeCommand(ec)
 		if ferr := ew.Flush(); ferr == nil {
 			ctx.W.WriteRaw(buf.Bytes())
