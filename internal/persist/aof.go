@@ -580,8 +580,91 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		}
 	case "zrem":
 		st.ZRem(key(), args[2:]...)
+	case "xadd":
+		applyAOFStreamAdd(st, args)
+	case "xdel":
+		applyAOFStreamDel(st, args)
+	case "xtrim":
+		applyAOFStreamTrim(st, args)
+	case "xsetid":
+		applyAOFStreamSetID(st, args)
 	}
 	return nil
+}
+
+// applyAOFStreamAdd replays an XADD command.
+func applyAOFStreamAdd(st *store.Store, args [][]byte) {
+	// XADD key [options] id field value ...
+	if len(args) < 5 {
+		return
+	}
+	parsed, err := store.ParseStreamAddArgs(args[2:])
+	if err != nil {
+		return
+	}
+	st.StreamAdd(args[1], parsed.Mode, parsed.ID, parsed.Fields, parsed.NoMkStream) //nolint:errcheck
+	if parsed.HasTrim {
+		st.StreamTrim(args[1], parsed.Trim) //nolint:errcheck
+	}
+}
+
+// applyAOFStreamDel replays an XDEL command.
+func applyAOFStreamDel(st *store.Store, args [][]byte) {
+	// XDEL key id [id ...]
+	if len(args) < 3 {
+		return
+	}
+	ids := make([]store.StreamID, 0, len(args)-2)
+	for _, arg := range args[2:] {
+		id, ok := store.ParseStreamIDStrict(string(arg), 0, nil)
+		if !ok {
+			return
+		}
+		ids = append(ids, id)
+	}
+	st.StreamDelete(args[1], ids) //nolint:errcheck
+}
+
+// applyAOFStreamTrim replays an XTRIM command.
+func applyAOFStreamTrim(st *store.Store, args [][]byte) {
+	// XTRIM key MAXLEN|MINID [~|=] threshold [LIMIT count]
+	if len(args) < 4 {
+		return
+	}
+	trim, err := store.ParseStreamTrimArgs(args[2:])
+	if err != nil {
+		return
+	}
+	st.StreamTrim(args[1], trim) //nolint:errcheck
+}
+
+// applyAOFStreamSetID replays an XSETID command.
+func applyAOFStreamSetID(st *store.Store, args [][]byte) {
+	// XSETID key id [ENTRIESADDED count]
+	if len(args) < 3 {
+		return
+	}
+	id, ok := store.ParseStreamIDStrict(string(args[2]), 0, nil)
+	if !ok {
+		return
+	}
+	entriesAdded := uint64(0)
+	setEntriesAdded := false
+	var maxDeletedID *store.StreamID
+	for i := 3; i+1 < len(args); i += 2 {
+		switch strings.ToUpper(string(args[i])) {
+		case "ENTRIESADDED":
+			if n, err := strconv.ParseUint(string(args[i+1]), 10, 64); err == nil {
+				entriesAdded = n
+				setEntriesAdded = true
+			}
+		case "MAXDELETEDID":
+			if m, ok := store.ParseStreamIDStrict(string(args[i+1]), 0, nil); ok {
+				maxDeletedID = &m
+			}
+		}
+	}
+	st.StreamSetID(args[1], id, entriesAdded, setEntriesAdded, maxDeletedID) //nolint:errcheck
 }
 
 // RewriteAOF writes a compact command stream representing the current dataset
@@ -663,6 +746,16 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 			for _, chunk := range chunkBytes(pairs, 64) {
 				args := [][]byte{[]byte("ZADD"), []byte(key)}
 				args = append(args, chunk...)
+				if _, err := w.Write(EncodeCommand(args)); err != nil {
+					return err
+				}
+			}
+		case store.TypeStream:
+			// Every entry is written as an XADD with an explicit identifier,
+			// so that the replay rebuilds the same stream.
+			for _, entry := range e.Stream.Entries() {
+				args := [][]byte{[]byte("XADD"), []byte(key), []byte(entry.ID.String())}
+				args = append(args, entry.Fields...)
 				if _, err := w.Write(EncodeCommand(args)); err != nil {
 					return err
 				}

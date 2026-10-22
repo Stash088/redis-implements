@@ -6,11 +6,12 @@
 
 - **Протокол RESP** — полный парсер и сериализатор: simple strings, errors, integers, bulk strings, arrays, null-значения. Буферизованное чтение, лимиты на размер сообщений, защита от malformed-ввода.
 - **RESP3** — `HELLO 3` переключает соединение на RESP3: карты, множества, double, big number, verbatim string, push-кадры. Проверено живым клиентом redis-py.
-- **Типизированное хранилище** — `string`, `list`, `hash`, `set`, `zset` с проверкой типов и ошибкой `-WRONGTYPE`.
+- **Типизированное хранилище** — `string`, `list`, `hash`, `set`, `zset`, `stream` с проверкой типов и ошибкой `-WRONGTYPE`.
 - **Структуры данных**:
   - `list` — собственный двусвязный список (O(1) push/pop с обоих концов);
   - `hash` / `set` — на основе `map`;
-  - `zset` — собственный **zskiplist** (dict + skip list), как в настоящем Redis.
+  - `zset` — собственный **zskiplist** (dict + skip list), как в настоящем Redis;
+  - `stream` — записи с идентификатором `ms-seq`, как в Redis.
 - **TTL / истечение** — ленивое (при чтении) + активное (фоновая горутина), `EXPIRE`, `TTL`, `PTTL`, `PERSIST`.
 - **Pub/Sub** — `SUBSCRIBE`/`PUBLISH`/`PSUBSCRIBE` с glob-паттернами; push-сообщения доставляются
   отдельной горутиной «насоса», медленные подписчики отключаются (как в Redis).
@@ -137,6 +138,7 @@ RESP `PING` через busybox `nc`.
 | Хэши | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS`, `HKEYS`, `HVALS`, `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD`, `HGETDEL` |
 | Множества | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SMISMEMBER`, `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SDIFF`, `SINTER`, `SUNION` (+ варианты `_STORE`) |
 | Сортированные множества | `ZADD`, `ZRANGE`, `ZREVRANGE` (вкл. `WITHSCORES`, `BYSCORE`/`BYLEX`/`REV`/`LIMIT`), `ZSCORE`, `ZREM`, `ZCARD`, `ZRANK`, `ZREVRANK`, `ZINCRBY`, `ZCOUNT`, `ZMSCORE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZLEXCOUNT`, `ZUNIONSTORE`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE`, `ZINTERCARD`, `ZREMRANGEBYRANK`/`BYSCORE`/`BYLEX`, `ZPOPMIN`, `ZPOPMAX`, `ZRANDMEMBER`, `ZRANGESTORE` |
+| Потоки (Streams) | `XADD` (в т.ч. `*`/`ms-*`, `MAXLEN`/`MINID`, `NOMKSTREAM`), `XLEN`, `XRANGE`, `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID` |
 | Pub/Sub | `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBLISH` |
 | Транзакции | `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH` |
 | Сервер / диагностика | `CONFIG GET/SET`, `CLIENT ID/LIST/INFO/SETNAME/GETNAME/KILL/REPLY`, `SLOWLOG GET/LEN/RESET`, `COMMAND COUNT/INFO/LIST/DOCS`, `RESET`, `TIME`, `LASTSAVE`, `RANDOMKEY`, `TOUCH`, `UNLINK`, `DEBUG` |
@@ -192,6 +194,8 @@ redis-cli
   length-энкодинг, CRC-64 (Jones). Сохранение атомарное (tmp + fsync + rename).
   Реальный `redis-server` загружает наши дампы, а наш сервер — дампы Redis 7+ (listpack, LZF, int-энкодинги).
   Лимитация загрузчика: legacy-типы (ziplist/intset) и hash с TTL полей не поддерживаются.
+  **Стримы в RDB пока не пишутся** (формат стримов Redis — в вехе M21): при `SAVE` в лог
+  пишется предупреждение, ключи-потоки в снимок не попадают. AOF их сохраняет.
 - **AOF** — RESP-журнал пишущих команд. Относительные TTL (`SET … EX/PX`, `EXPIRE`, `PEXPIRE`)
   пишутся как абсолютные `PEXPIREAT`, поэтому при загрузке сроки жизни не «съезжают».
   `--appendfsync always|everysec|no`; обрезанный хвост при загрузке игнорируется.
@@ -235,7 +239,8 @@ SLOWLOG LEN / SLOWLOG RESET
 scripts/compat-check.sh          # поднимает оба сервера и сравнивает
 ```
 
-Сценарии лежат в `testdata/compat/*.txt` (по файлу на семейство команд).
+Сценарии лежат в `testdata/compat/*.txt` (по файлу на семейство команд):
+blocking, hash, keys, list, scan, set, **stream**, zset.
 
 ## Тестирование и качество
 

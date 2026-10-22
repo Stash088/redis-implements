@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/amir/redis-implements/internal/persist"
+	"github.com/amir/redis-implements/internal/store"
 )
 
 // cmdRename moves the value of a key to another key.
@@ -130,6 +131,11 @@ func cmdDump(ctx *Ctx) error {
 	}
 	payload, err := persist.DumpValue(e)
 	if err != nil {
+		if e.Type == store.TypeStream {
+			// The streams have no DUMP payload yet: their RDB encoding
+			// arrives with the stream format (M21).
+			return ctx.W.WriteError("ERR The stream type is not supported by DUMP yet")
+		}
 		return ctx.W.WriteError("ERR " + err.Error())
 	}
 	return ctx.W.WriteBulkString(payload)

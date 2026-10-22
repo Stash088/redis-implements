@@ -1,0 +1,59 @@
+# Сценарий сверки: команды потоков (Streams), модель данных.
+
+# --- подготовка ---
+XADD s 1-0 f1 v1
+XADD s 2-0 f2 v2
+XADD s 3-0 f3 v3
+XADD s 4-0 f4 v4
+XADD s 5-0 f5 v5
+
+# --- длина и чтение ---
+XLEN s
+XRANGE s - +
+XREVRANGE s + -
+XRANGE s 2-0 4-0
+XREVRANGE s 4-0 2-0
+XRANGE s 2-0 4-0 COUNT 2
+XRANGE s (2-0 (4-0
+XRANGE s - + COUNT 0
+XRANGE nosuch - +
+XREVRANGE nosuch + -
+
+# --- идентификаторы ---
+XADD s 6-0 f6 v6
+XADD s 6-0 f6 v6
+XADD s 5-* f7 v7
+XADD s 7-* f8 v8
+XADD s 0-0 f9 v9
+XADD s abc f9 v9
+XLEN s
+
+# --- удаление ---
+XDEL s 2-0
+XDEL s 99-0
+XLEN s
+XRANGE s - +
+
+# --- обрезка ---
+XTRIM s MAXLEN = 2
+XLEN s
+XRANGE s - +
+XTRIM s MINID = 5-0
+XLEN s
+XRANGE s - +
+XTRIM nosuch MAXLEN = 1
+
+# --- последний идентификатор ---
+XSETID s 100-0
+XSETID s 50-0
+XSETID nosuch 1-0
+XSETID s abc
+
+# --- другие типы ключей ---
+SET str v
+XLEN str
+XRANGE str - +
+XDEL str 1-0
+XTRIM str MAXLEN = 1
+XADD str 1-0 f v
+TYPE s

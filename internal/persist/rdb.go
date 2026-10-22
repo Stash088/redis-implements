@@ -105,9 +105,16 @@ type rdbEntry struct {
 }
 
 // rdbEntries collects the live entries of a database.
+//
+// The streams are skipped: the RDB format of the streams is not implemented
+// yet, and writing them with an unknown type would make the whole snapshot
+// unreadable by the real Redis. The server warns about the skipped keys.
 func rdbEntries(st *store.Store) ([]rdbEntry, error) {
 	var entries []rdbEntry
 	err := st.ForEach(func(key string, e *store.Entry) error {
+		if e.Type == store.TypeStream {
+			return nil
+		}
 		entries = append(entries, rdbEntry{key, e})
 		return nil
 	})

@@ -28,6 +28,7 @@ redis-implements/
     │   ├── collections.go          # HASH и SET (map-based)
     │   ├── skiplist.go             # zskiplist (как в Redis)
     │   ├── zset.go                 # ZSET: dict + skiplist + store-операции
+    │   ├── stream.go               # STREAM: записи с id ms-seq + операции (M19)
     │   ├── expiry.go               # Expirer — активная очистка (фоновый тикер)
     │   ├── watch.go                # WATCH/CAS реестр наблюдателей (этап 8)
     │   ├── evict.go                # maxmemory eviction + учёт памяти (этап 8)
@@ -51,6 +52,7 @@ redis-implements/
     │   ├── commands_hash.go
     │   ├── commands_set.go
     │   ├── commands_zset.go
+    │   ├── commands_stream.go      # XADD/XLEN/XRANGE/XREVRANGE/XDEL/XTRIM/XSETID (M19)
     │   ├── server_test.go          # integration-тесты (клиент-хелпер)
     │   ├── commands_pubsub_test.go
     │   ├── commands_transaction_test.go
@@ -177,7 +179,8 @@ redis-implements/
 - [ ] Репликация master→replica (PSYNC, RDB-передача, failover)
 - [ ] Кластер/шардирование (hash slots, routing)
 - [ ] Lua-скриптинг (EVAL)
-- [ ] Streams (XADD/XRANGE/XREAD, consumer groups)
+- [ ] Streams: группы потребителей и чтение (`XREAD`/`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`)
+      — модель данных сделана в вехе **M19**
 - [ ] TLS, Unix-сокеты, модули
 
 ### 🚀 Развитие после этапа 8 — вехи M0+
@@ -208,7 +211,7 @@ redis-implements/
 | M16 | Управление ключами: `RENAME`/`RENAMENX`, `COPY`, `MOVE`, `DUMP`/`RESTORE`, `EXPIRETIME`, `SWAPDB`, `OBJECT`, `SORT` | ✅ |
 | M17 | Блокирующие команды: `BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX` | ✅ |
 | M18 | Харнесс сверки с настоящим Redis (`cmd/compat-check` + `testdata/compat`) | ✅ |
-| M19 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |
+| M19 | Streams: модель данных (`XADD`, `XLEN`, `XRANGE`, `XREVRANGE`, `XDEL`, `XTRIM`, `XSETID`) | ✅ |
 | M20 | Streams: группы и чтение (`XREADGROUP`, `XACK`, `XGROUP`, `XPENDING`) | ⏳ |
 | M21 | Streams: персистентность (RDB-энкодинг с полной интероп-совместимостью, AOF) | ⏳ |
 | M22 | Репликация: каркас (`REPLICAOF`, `PSYNC`, передача RDB) | ⏳ |

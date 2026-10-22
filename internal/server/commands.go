@@ -216,6 +216,16 @@ func (s *Server) registerCommands() {
 	// propagates itself to the AOF and does not dirty the dataset.
 	s.reg("SELECT", 2, cmdSelect)
 	s.regW("FLUSHALL", -1, cmdFlushAll)
+
+	// Stream commands. XADD propagates itself to the AOF, because the
+	// identifier it writes must be the one that was actually generated.
+	s.regWSG("XADD", -5, cmdXAdd)
+	s.reg("XLEN", 2, cmdXLen)
+	s.reg("XRANGE", -4, cmdXRange)
+	s.reg("XREVRANGE", -4, cmdXRevRange)
+	s.regW("XDEL", -3, cmdXDel)
+	s.regW("XTRIM", -4, cmdXTrim)
+	s.regW("XSETID", -3, cmdXSetID)
 }
 
 // cmdSpec describes a single command: its handler and its metadata.

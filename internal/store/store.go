@@ -40,6 +40,7 @@ const (
 	TypeHash
 	TypeSet
 	TypeZSet
+	TypeStream
 )
 
 // String returns the lowercase name used by the TYPE command.
@@ -55,6 +56,8 @@ func (t Type) String() string {
 		return "set"
 	case TypeZSet:
 		return "zset"
+	case TypeStream:
+		return "stream"
 	default:
 		return "none"
 	}
@@ -69,6 +72,7 @@ type Entry struct {
 	Hash       map[string][]byte   // TypeHash
 	Set        map[string]struct{} // TypeSet
 	ZSet       *ZSet               // TypeZSet
+	Stream     *Stream             // TypeStream
 	ExpiresAt  time.Time           // zero value means no expiry
 	cost       int                 // approximate memory footprint, incl. key
 	lastAccess atomic.Int64        // nanos, updated on access (allkeys-lru)
