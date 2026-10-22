@@ -201,7 +201,7 @@ redis-implements/
 | M10 | Инкрементальные обходы: `HSCAN`, `SSCAN`, `ZSCAN` | ✅ |
 | M11 | Hash v2: `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD`, `HGETDEL` | ✅ |
 | M12 | Set v2: `SINTERCARD`, `SMOVE`, `SPOP`, `SDIFF`/`SINTER`/`SUNION` | ⏳ |
-| M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `LPOS` | ⏳ |
+| M13 | List v2: `LINSERT`, `LREM`, `LTRIM`, `LMOVE`, `RPOPLPUSH`, `LPOS`, `LPUSHX`/`RPUSHX` | ✅ |
 | M14 | ZSet v2: `ZRANGEBYSCORE`/`BYLEX`, `ZINCRBY`, `ZUNIONSTORE`, `ZPOPMIN` | ⏳ |
 | M15 | Блокирующие команды: `BLPOP`, `BRPOP`, `BZPOPMIN` | ⏳ |
 | M16 | Streams: модель данных (`XADD`, `XRANGE`, `XLEN`) | ⏳ |

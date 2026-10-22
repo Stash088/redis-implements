@@ -1,5 +1,7 @@
 package store
 
+import "bytes"
+
 // listNode is a single element of a List.
 type listNode struct {
 	val  []byte
@@ -86,6 +88,71 @@ func (l *List) PopBack() ([]byte, bool) {
 	}
 	l.len--
 	return v, true
+}
+
+// IndexOfValue returns the index of the first element equal to value, or -1
+// when the list holds no such element.
+func (l *List) IndexOfValue(value []byte) int {
+	i := 0
+	for n := l.head; n != nil; n = n.next {
+		if bytes.Equal(n.val, value) {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+// insertAt inserts v before the element at index i. An index past the end
+// appends the value.
+func (l *List) insertAt(i int, v []byte) {
+	n := &listNode{val: v}
+	switch {
+	case l.head == nil:
+		l.head, l.tail = n, n
+	case i <= 0:
+		n.next = l.head
+		l.head.prev = n
+		l.head = n
+	case i >= l.len:
+		n.prev = l.tail
+		l.tail.next = n
+		l.tail = n
+	default:
+		prev := l.nodeAt(i - 1)
+		next := prev.next
+		prev.next = n
+		n.prev = prev
+		n.next = next
+		next.prev = n
+	}
+	l.len++
+}
+
+// InsertBefore inserts v before the element at index i.
+func (l *List) InsertBefore(i int, v []byte) { l.insertAt(i, v) }
+
+// InsertAfter inserts v after the element at index i.
+func (l *List) InsertAfter(i int, v []byte) { l.insertAt(i+1, v) }
+
+// RemoveAt removes the element at index i. It does nothing when the index is
+// out of range.
+func (l *List) RemoveAt(i int) {
+	n := l.nodeAt(i)
+	if n == nil {
+		return
+	}
+	if n.prev != nil {
+		n.prev.next = n.next
+	} else {
+		l.head = n.next
+	}
+	if n.next != nil {
+		n.next.prev = n.prev
+	} else {
+		l.tail = n.prev
+	}
+	l.len--
 }
 
 // nodeAt returns the node at index i (0-based, negative from the end) or nil

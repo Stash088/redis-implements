@@ -172,9 +172,18 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
 - [ ] `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SMISMEMBER`, `SDIFF`(`_STORE`),
       `SINTER`(`_STORE`), `SUNION`(`_STORE`).
 
-### ⏳ M13 — List v2
+### ✅ M13 — List v2
 
-- [ ] `LINSERT`, `LREM`, `LTRIM`, `LPOS`, `LMOVE`, `RPOPLPUSH`, `LPUSHX`, `RPUSHX`.
+- [x] `LINSERT` (BEFORE/AFTER), `LREM` (count), `LTRIM`, `LPOS`
+      (RANK/COUNT/MAXLEN), `LMOVE`, `RPOPLPUSH`, `LPUSHX`, `RPUSHX`.
+- [x] Семантика как в Redis: `LINSERT` возвращает -1, когда pivot не найден,
+      и 0, когда нет ключа; `COUNT` в `LPOS` не может быть отрицательным,
+      `MAXLEN` ограничивает окно **просмотра**, а не число ответов; при
+      заданном `COUNT` ответ — массив, без него — число.
+- [x] Список: `IndexOfValue`, `InsertBefore`/`InsertAfter`, `RemoveAt`.
+- [x] Хранилище: `ListInsert`, `ListRemove`, `ListTrim`, `ListPosition`,
+      `ListMove`, `ListPushExist`.
+- [x] AOF: разбор новых команд; сценарий сверки `testdata/compat/list.txt`.
 
 ### ⏳ M14 — ZSet v2 (range-семейство)
 
