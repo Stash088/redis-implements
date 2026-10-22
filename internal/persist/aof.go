@@ -430,6 +430,36 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		}
 	case "hdel":
 		st.HashDel(key(), args[2:]...)
+	case "smove":
+		if len(args) == 4 {
+			st.SetMove(key(), args[2], args[3]) //nolint:errcheck
+		}
+	case "spop":
+		if len(args) >= 2 {
+			count := 0
+			if len(args) == 3 {
+				if n, err := strconv.Atoi(string(args[2])); err == nil {
+					count = n
+				}
+			}
+			st.SetPop(key(), count) //nolint:errcheck
+		}
+	case "sdiffstore", "sinterstore", "sunionstore":
+		if len(args) >= 3 {
+			var members [][]byte
+			var err error
+			switch name {
+			case "sdiffstore":
+				members, err = st.SetDiff(args[2:])
+			case "sinterstore":
+				members, err = st.SetInter(args[2:])
+			default:
+				members, err = st.SetUnion(args[2:])
+			}
+			if err == nil {
+				st.SetStore(args[1], members) //nolint:errcheck
+			}
+		}
 	case "sadd":
 		st.SetAdd(key(), args[2:]...)
 	case "srem":
