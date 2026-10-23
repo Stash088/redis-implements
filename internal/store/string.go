@@ -206,14 +206,17 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 	s.touchLocked(string(key))
 
 	end := offset + int64(len(value))
-	if end > int64(len(e.Str)) {
-		// Grow the string with zero bytes.
-		grown := make([]byte, end)
-		copy(grown, e.Str)
-		s.addCost(e, int(end)-len(e.Str))
-		e.Str = grown
+	// The value is never modified in place: readers may still be copying the
+	// old buffer into a socket, so SETRANGE builds a new one and publishes it.
+	newLen := len(e.Str)
+	if end > int64(newLen) {
+		newLen = int(end)
 	}
-	copy(e.Str[offset:], value)
+	grown := make([]byte, newLen)
+	copy(grown, e.Str)
+	copy(grown[offset:], value)
+	s.addCost(e, newLen-len(e.Str))
+	e.Str = grown
 	return len(e.Str), nil
 }
 

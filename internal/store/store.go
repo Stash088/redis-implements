@@ -78,6 +78,11 @@ type Entry struct {
 	lastAccess atomic.Int64        // nanos, updated on access (allkeys-lru)
 }
 
+// Invariant: the byte buffers reachable from an entry are never modified in
+// place. A command that changes a value (APPEND, SETRANGE) builds a new
+// buffer and publishes it, so a reader that already got a reference to the
+// old buffer can keep using it after the store lock is released.
+
 // Expired reports whether the entry has a TTL that has passed.
 func (e *Entry) Expired(now time.Time) bool {
 	return !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt)
@@ -201,8 +206,9 @@ func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 // the store's read lock is held, so several readers can work in parallel.
 // It reports ok=false when the key is missing or its TTL has passed.
 //
-// The closure must not modify the entry and must not retain it (or the
-// slices it returns) beyond the call.
+// The closure must not modify the entry. The slices it returns stay valid
+// after the lock is released: stored buffers are never modified in place
+// (see the Entry invariant), so a reader may keep using them.
 func readEntry[T any](s *Store, key []byte, fn func(e *Entry) (T, error)) (T, bool, error) {
 	var zero T
 	k := string(key)
@@ -423,6 +429,9 @@ func (s *Store) IncrBy(key []byte, delta int64) (int64, error) {
 
 // Append appends suffix to the string value of key, creating it if missing, and
 // returns the new length.
+//
+// The stored buffer is never modified in place: readers may still be copying
+// the old value into a socket, so APPEND builds a new buffer and publishes it.
 func (s *Store) Append(key, suffix []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -431,7 +440,11 @@ func (s *Store) Append(key, suffix []byte) (int, error) {
 		if e.Type != TypeString {
 			return 0, ErrWrongType
 		}
-		e.Str = append(e.Str, suffix...)
+		grown := make([]byte, 0, len(e.Str)+len(suffix))
+		grown = append(grown, e.Str...)
+		grown = append(grown, suffix...)
+		s.addCost(e, len(suffix))
+		e.Str = grown
 		return len(e.Str), nil
 	}
 	s.newStringEntry(key, append([]byte(nil), suffix...), time.Time{})
