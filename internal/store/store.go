@@ -593,3 +593,46 @@ func (s *Store) SetClock(f func() time.Time) { s.clock = f }
 func parseInt(b []byte) (int64, error) {
 	return strconv.ParseInt(string(b), 10, 64)
 }
+
+// Copy returns a copy of the entry that can be read without the lock of the
+// store.
+//
+// The values (the bytes of a string, the elements of a list, the members of
+// a set) are shared: they are never modified in place, so a copy of the
+// pointer is enough. The structures that are changed in place (the list, the
+// hash, the set, the sorted set and the stream) are copied.
+//
+// The persistence layer uses it to take a snapshot of the dataset: without it
+// the serialization of a snapshot would race with the commands that change
+// the collections.
+func (e *Entry) Copy() *Entry {
+	out := &Entry{
+		Type:      e.Type,
+		Str:       e.Str,
+		ExpiresAt: e.ExpiresAt,
+		cost:      e.cost,
+	}
+	out.lastAccess.Store(e.lastAccess.Load())
+	if e.List != nil {
+		out.List = e.List.Clone()
+	}
+	if e.Hash != nil {
+		out.Hash = make(map[string][]byte, len(e.Hash))
+		for k, v := range e.Hash {
+			out.Hash[k] = v
+		}
+	}
+	if e.Set != nil {
+		out.Set = make(map[string]struct{}, len(e.Set))
+		for k := range e.Set {
+			out.Set[k] = struct{}{}
+		}
+	}
+	if e.ZSet != nil {
+		out.ZSet = e.ZSet.Clone()
+	}
+	if e.Stream != nil {
+		out.Stream = NewStream(e.Stream.Snapshot())
+	}
+	return out
+}

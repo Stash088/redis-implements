@@ -105,10 +105,14 @@ type rdbEntry struct {
 }
 
 // rdbEntries collects the live entries of a database.
+//
+// The entries are copied while the lock of the store is held: the collections
+// are changed in place, so a snapshot that kept the pointers would race with
+// the commands that write them.
 func rdbEntries(st *store.Store) ([]rdbEntry, error) {
 	var entries []rdbEntry
 	err := st.ForEach(func(key string, e *store.Entry) error {
-		entries = append(entries, rdbEntry{key, e})
+		entries = append(entries, rdbEntry{key, e.Copy()})
 		return nil
 	})
 	if err != nil {
