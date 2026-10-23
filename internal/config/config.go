@@ -44,6 +44,11 @@ type Config struct {
 	// AOFFlushMS is how often the buffered AOF commands are written to the
 	// file, in milliseconds. Zero writes them as soon as they arrive.
 	AOFFlushMS int
+
+	// BufReadSize and BufWriteSize are the sizes of the socket buffers of
+	// a connection, in bytes. Zero means the default.
+	BufReadSize  int
+	BufWriteSize int
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -124,6 +129,8 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&c.RequirePass, "requirepass", c.RequirePass, "password clients must authenticate with (empty disables it)")
 	fs.IntVar(&c.PprofPort, "pprof", c.PprofPort, "port for the pprof endpoints on 127.0.0.1 (0 disables them)")
 	fs.IntVar(&c.AOFFlushMS, "aof-flush-interval", c.AOFFlushMS, "how often the buffered AOF commands are written to the file, in milliseconds (0 writes them at once)")
+	fs.IntVar(&c.BufReadSize, "buf-read-size", c.BufReadSize, "size of the socket read buffer of a connection, in bytes (0 uses the default)")
+	fs.IntVar(&c.BufWriteSize, "buf-write-size", c.BufWriteSize, "size of the socket write buffer of a connection, in bytes (0 uses the default)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -135,6 +142,9 @@ func Parse(args []string) (Config, error) {
 	}
 	if c.AOFFlushMS < 0 {
 		return Config{}, fmt.Errorf("invalid --aof-flush-interval %d", c.AOFFlushMS)
+	}
+	if c.BufReadSize < 0 || c.BufWriteSize < 0 {
+		return Config{}, fmt.Errorf("invalid buffer size %d/%d", c.BufReadSize, c.BufWriteSize)
 	}
 	if c.SaveSeconds < 0 || c.SaveChanges < 0 {
 		return Config{}, fmt.Errorf("invalid save policy %d/%d", c.SaveSeconds, c.SaveChanges)

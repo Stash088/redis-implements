@@ -85,6 +85,7 @@ func main() {
 	srv.SetMaxMemorySamples(int64(cfg.MaxMemorySamples))
 	srv.SetSlowlog(cfg.SlowlogSlowerThan, cfg.SlowlogMaxLen)
 	srv.SetAppendFsync(cfg.AppendFsync)
+	srv.SetBufferSizes(cfg.BufReadSize, cfg.BufWriteSize)
 	log.Printf("server: listening on %s (dir=%s)", srv.Addr(), cfg.Dir)
 
 	if cfg.PprofPort > 0 {

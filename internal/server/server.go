@@ -64,6 +64,10 @@ type Server struct {
 	// connections would fight for the same line.
 	received commandsCounter
 
+	// Sizes of the socket buffers of a connection (0 means the default).
+	bufReadSize  int
+	bufWriteSize int
+
 	// Persistence paths (empty disables the related feature).
 	DBPath  string
 	AOFPath string
@@ -217,6 +221,33 @@ func (s *Server) SetSlowlog(threshold int64, maxLen int) {
 // Call before Serve.
 func (s *Server) SetAppendFsync(name string) { s.appendFsync = name }
 
+// readBufferSize returns the size of the socket read buffer of a connection.
+func (s *Server) readBufferSize() int {
+	if s.bufReadSize > 0 {
+		return s.bufReadSize
+	}
+	return resp.DefaultReadBufferSize
+}
+
+// writeBufferSize returns the size of the socket write buffer of a connection.
+func (s *Server) writeBufferSize() int {
+	if s.bufWriteSize > 0 {
+		return s.bufWriteSize
+	}
+	return resp.DefaultWriteBufferSize
+}
+
+// SetBufferSizes configures the socket buffers of a connection. Zero means
+// the default size.
+//
+// A bigger read buffer pays off when a client pipelines large commands: they
+// arrive in fewer read syscalls. A bigger write buffer pays off when the
+// replies of a pipeline do not fit into the default one.
+func (s *Server) SetBufferSizes(read, write int) {
+	s.bufReadSize = read
+	s.bufWriteSize = write
+}
+
 // SetMaxMemory configures the maxmemory limit (bytes, 0 disables eviction).
 func (s *Server) SetMaxMemory(n int64) { s.maxMemory.Store(n) }
 
@@ -324,8 +355,8 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 	}()
 
 	s.Logger.Printf("server: client connected: %s", conn.RemoteAddr())
-	r := resp.NewReader(conn)
-	w := resp.NewWriter(conn)
+	r := resp.NewReaderSize(conn, s.readBufferSize())
+	w := resp.NewWriterSize(conn, s.writeBufferSize())
 
 	for {
 		// Send the answers we owe the client before blocking on the socket.
