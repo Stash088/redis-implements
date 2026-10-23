@@ -105,16 +105,9 @@ type rdbEntry struct {
 }
 
 // rdbEntries collects the live entries of a database.
-//
-// The streams are skipped: the RDB format of the streams is not implemented
-// yet, and writing them with an unknown type would make the whole snapshot
-// unreadable by the real Redis. The server warns about the skipped keys.
 func rdbEntries(st *store.Store) ([]rdbEntry, error) {
 	var entries []rdbEntry
 	err := st.ForEach(func(key string, e *store.Entry) error {
-		if e.Type == store.TypeStream {
-			return nil
-		}
 		entries = append(entries, rdbEntry{key, e})
 		return nil
 	})
@@ -218,6 +211,8 @@ func rdbWriteValue(b *rdbBuf, e *store.Entry, key []byte) error {
 		typeByte = rdbTypeHash
 	case store.TypeZSet:
 		typeByte = rdbTypeZSet2
+	case store.TypeStream:
+		typeByte = rdbTypeStreamListpacks3
 	default:
 		return fmt.Errorf("persist: cannot serialize entry type %v", e.Type)
 	}
@@ -252,6 +247,8 @@ func rdbWriteValue(b *rdbBuf, e *store.Entry, key []byte) error {
 			binary.LittleEndian.PutUint64(d[:], math.Float64bits(ze.Score))
 			b.raw(d[:])
 		}
+	case store.TypeStream:
+		return writeStreamValue(b, e)
 	default:
 		return fmt.Errorf("persist: cannot serialize entry type %v", e.Type)
 	}
@@ -527,6 +524,13 @@ func (d *rdbDecoder) readValue(op byte) (*store.Entry, error) {
 			z.Add(score, elems[i])
 		}
 		e.ZSet = z
+	case rdbTypeStreamListpacks, rdbTypeStreamListpacks2, rdbTypeStreamListpacks3:
+		snap, err := d.readStreamValue(op)
+		if err != nil {
+			return nil, err
+		}
+		e.Type = store.TypeStream
+		e.Stream = store.NewStream(snap)
 	case rdbTypeListQuicklist2:
 		e.Type = store.TypeList
 		nodes, err := d.readLen()
