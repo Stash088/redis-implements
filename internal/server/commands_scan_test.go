@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/amir/redis-implements/internal/resp"
+	"github.com/amir/redis-implements/internal/store"
 )
 
 // scanAll walks a collection with a SCAN-like command and returns the
@@ -144,5 +147,133 @@ func TestScanCount(t *testing.T) {
 	arr = c.arrWant("HSCAN", "h", string(arr[0].Str), "COUNT", "2")
 	if len(arr) != 2 || len(arr[1].Array) != 4 {
 		t.Errorf("the second HSCAN batch: got %+v", arr)
+	}
+}
+
+// TestScanTraversalSharded walks a keyspace spread over all shards and
+// checks that every key comes back exactly once, that the traversal
+// terminates and that keys arrive shard by shard (sorted within a shard).
+func TestScanTraversalSharded(t *testing.T) {
+	addr := startTestServer(t)
+	c := newClient(t, addr)
+
+	const n = 600
+	for i := 0; i < n; i++ {
+		c.ok("SET", fmt.Sprintf("scan:key:%04d", i), "v")
+	}
+
+	seen := make(map[string]int)
+	var order []string
+	cursor := "0"
+	steps := 0
+	for {
+		arr := c.arrWant("SCAN", cursor, "COUNT", "50")
+		cursor = string(arr[0].Str)
+		for _, item := range arr[1].Array {
+			k := string(item.Str)
+			seen[k]++
+			order = append(order, k)
+		}
+		steps++
+		if cursor == "0" {
+			break
+		}
+		if steps > n+50 {
+			t.Fatal("SCAN does not terminate")
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("traversal returned %d distinct keys, want %d", len(seen), n)
+	}
+	for k, count := range seen {
+		if count != 1 {
+			t.Fatalf("key %q returned %d times", k, count)
+		}
+	}
+	// Keys within one shard are sorted; shard boundaries may interrupt
+	// the global order, so the traversal may "reset" at most once per
+	// shard boundary.
+	descents := 0
+	for i := 1; i < len(order); i++ {
+		if order[i] < order[i-1] {
+			descents++
+		}
+	}
+	if descents >= store.ShardCount {
+		t.Fatalf("keys within shards are not sorted: %d descents over %d keys", descents, len(order))
+	}
+}
+
+// TestScanCursorBounds checks that out-of-range cursors finish the scan
+// gracefully instead of looping or erroring.
+func TestScanCursorBounds(t *testing.T) {
+	addr := startTestServer(t)
+	c := newClient(t, addr)
+	for i := 0; i < 10; i++ {
+		c.ok("SET", fmt.Sprintf("k%d", i), "v")
+	}
+	// A shard index beyond the shard count: no keys, cursor 0.
+	arr := c.arrWant("SCAN", "18446744073709551615") // shard 255
+	if string(arr[0].Str) != "0" || len(arr[1].Array) != 0 {
+		t.Fatalf("out-of-range cursor: got %+v, want cursor 0 and no keys", arr)
+	}
+	// A huge offset inside a valid shard: the shard counts as exhausted
+	// and the scan continues with the next one (no error, no loop).
+	arr = c.arrWant("SCAN", "72057594037927935") // shard 0, offset 2^56-1
+	keys := map[string]bool{}
+	cursor := string(arr[0].Str)
+	for _, item := range arr[1].Array {
+		keys[string(item.Str)] = true
+	}
+	for steps := 0; cursor != "0"; steps++ {
+		if steps > 20 {
+			t.Fatal("huge-offset scan does not terminate")
+		}
+		arr = c.arrWant("SCAN", cursor)
+		cursor = string(arr[0].Str)
+		for _, item := range arr[1].Array {
+			k := string(item.Str)
+			if keys[k] {
+				t.Fatalf("key %q returned twice after a huge offset", k)
+			}
+			keys[k] = true
+		}
+	}
+	// Shard 0 was skipped, so not every key has to come back, but only
+	// keys of this keyspace may appear.
+	for k := range keys {
+		if len(k) < 2 || k[:1] != "k" {
+			t.Fatalf("stray key %q in the huge-offset traversal", k)
+		}
+	}
+}
+
+// TestScanTraversalMatch walks the keyspace with MATCH and checks the filter.
+func TestScanTraversalMatch(t *testing.T) {
+	addr := startTestServer(t)
+	c := newClient(t, addr)
+	for i := 0; i < 100; i++ {
+		c.ok("SET", fmt.Sprintf("match:key:%d", i), "v")
+		c.ok("SET", fmt.Sprintf("other:%d", i), "v")
+	}
+	seen := make(map[string]int)
+	cursor := "0"
+	for {
+		arr := c.arrWant("SCAN", cursor, "COUNT", "20", "MATCH", "match:*")
+		cursor = string(arr[0].Str)
+		for _, item := range arr[1].Array {
+			seen[string(item.Str)]++
+		}
+		if cursor == "0" {
+			break
+		}
+	}
+	if len(seen) != 100 {
+		t.Fatalf("MATCH returned %d keys, want 100", len(seen))
+	}
+	for k := range seen {
+		if !strings.HasPrefix(k, "match:") {
+			t.Fatalf("MATCH let %q through", k)
+		}
 	}
 }

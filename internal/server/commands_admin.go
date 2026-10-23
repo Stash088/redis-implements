@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"github.com/amir/redis-implements/internal/store"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -35,6 +36,27 @@ func cmdKeys(ctx *Ctx) error {
 	return nil
 }
 
+// The keyspace SCAN walks the store's shards one by one: the cursor packs the
+// shard index and the offset within that shard's sorted keys. One call sorts
+// only one shard (1/shardCount of the keyspace), so a full traversal no longer
+// rebuilds and sorts a snapshot of every key on every call. On a keyspace that
+// does not change during the traversal every key is returned exactly once —
+// a superset of Redis's guarantees, which allow both misses and duplicates.
+const (
+	scanShardBits = 56
+	scanOffsetMax = uint64(1)<<scanShardBits - 1
+)
+
+// packScanCursor packs the shard index and the offset into an opaque cursor.
+func packScanCursor(shard, offset int) uint64 {
+	return uint64(shard)<<scanShardBits | uint64(offset)&scanOffsetMax
+}
+
+// unpackScanCursor splits a cursor into the shard index and the offset.
+func unpackScanCursor(c uint64) (shard, offset int) {
+	return int(c >> scanShardBits), int(c & scanOffsetMax)
+}
+
 func cmdScan(ctx *Ctx) error {
 	if len(ctx.Args) < 2 {
 		wrongArgs(ctx.W, "scan")
@@ -45,24 +67,59 @@ func cmdScan(ctx *Ctx) error {
 		return nil
 	}
 
-	// The cursor indexes a sorted snapshot of live keys: full coverage with no
-	// duplicates (a superset of Redis's guarantees, which allow both).
-	keys := ctx.Store.Keys()
-	sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
-	start, end, next := scanRange(len(keys), opts)
+	shardIdx, offset := unpackScanCursor(opts.cursor)
+	if shardIdx > store.ShardCount {
+		// A cursor from a keyspace with more shards (or garbage): nothing
+		// left to scan.
+		shardIdx, offset = store.ShardCount, 0
+	}
 
 	var matched [][]byte
-	for _, k := range keys[start:end] {
-		if opts.pattern == "" || globMatch(opts.pattern, string(k)) {
-			matched = append(matched, k)
+	// scanned counts the key positions consumed across shards, so COUNT
+	// keeps its meaning from the single-snapshot scan: a full page holds
+	// COUNT positions of the keyspace, wherever they live.
+	scanned := 0
+	pageFull := false
+	for shardIdx < store.ShardCount {
+		keys := ctx.Store.KeysOfShard(shardIdx)
+		sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
+		if offset >= len(keys) {
+			// The shard (or the position in it) is exhausted: move on.
+			shardIdx++
+			offset = 0
+			continue
 		}
+		if scanned >= opts.count {
+			pageFull = true
+			break
+		}
+		take := opts.count - scanned
+		if end := offset + take; end > len(keys) {
+			take = len(keys) - offset
+		}
+		for _, k := range keys[offset : offset+take] {
+			if opts.pattern == "" || globMatch(opts.pattern, string(k)) {
+				matched = append(matched, k)
+			}
+		}
+		scanned += take
+		offset += take
+	}
+	// The traversal is over when the walk ran past the last shard; a full
+	// page mid-keyspace continues from the packed cursor.
+	cursor := uint64(0)
+	if pageFull {
+		cursor = packScanCursor(shardIdx, offset)
 	}
 
 	if err := ctx.W.WriteArrayHeader(2); err != nil {
 		return err
 	}
-	if err := ctx.W.WriteBulkString([]byte(strconv.FormatUint(next, 10))); err != nil {
+	if err := ctx.W.WriteBulkString([]byte(strconv.FormatUint(cursor, 10))); err != nil {
 		return err
+	}
+	if matched == nil {
+		matched = [][]byte{}
 	}
 	if err := ctx.W.WriteArrayHeader(len(matched)); err != nil {
 		return err

@@ -26,6 +26,11 @@ const (
 	shardMask = shardCount - 1
 )
 
+// ShardCount is the number of shards every Store splits its keyspace into.
+// The sharded SCAN walks the shards one by one, so its cursor needs the
+// number to know where the traversal ends.
+const ShardCount = shardCount
+
 // shard is one independently locked slice of the keyspace.
 type shard struct {
 	mu        sync.RWMutex

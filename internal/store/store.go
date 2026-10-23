@@ -520,16 +520,30 @@ func (s *Store) Keys() [][]byte {
 	now := s.clock()
 	keys := make([][]byte, 0, s.approxLen())
 	for i := range s.shards {
-		sh := &s.shards[i]
-		sh.mu.RLock()
-		for k, e := range sh.data {
-			if e.Expired(now) {
-				continue
-			}
-			keys = append(keys, []byte(k))
-		}
-		sh.mu.RUnlock()
+		keys = append(keys, s.keysOfShard(i, now)...)
 	}
+	return keys
+}
+
+// KeysOfShard returns the live keys of the shard with the given index. It
+// backs the sharded SCAN: one call visits one shard, so the per-call cost of
+// building the batch is a fraction of a full Keys.
+func (s *Store) KeysOfShard(i int) [][]byte {
+	return s.keysOfShard(i, s.clock())
+}
+
+// keysOfShard is KeysOfShard with a shared now timestamp.
+func (s *Store) keysOfShard(i int, now time.Time) [][]byte {
+	sh := &s.shards[i]
+	sh.mu.RLock()
+	keys := make([][]byte, 0, len(sh.data))
+	for k, e := range sh.data {
+		if e.Expired(now) {
+			continue
+		}
+		keys = append(keys, []byte(k))
+	}
+	sh.mu.RUnlock()
 	return keys
 }
 
