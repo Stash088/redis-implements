@@ -125,20 +125,21 @@ func (z *ZSet) Rank(member []byte, reverse bool) (int64, bool) {
 // ZAdd inserts or updates member with score in the zset under key, creating it
 // if missing. It returns 1 when member was newly added.
 func (s *Store) ZAdd(key []byte, score float64, member []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeZSet, ZSet: newZSet(), cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	if _, exists := e.ZSet.dict[string(member)]; !exists {
-		s.addCost(e, len(member)+elemOverhead)
+		s.addCost(sh, e, len(member)+elemOverhead)
 	}
 	if e.ZSet.Add(score, member) {
 		return 1, nil
@@ -171,26 +172,27 @@ func (s *Store) ZScore(key, member []byte) (float64, bool, error) {
 // ZRem removes members from the zset under key, returning the number removed.
 // The key is deleted when its zset becomes empty.
 func (s *Store) ZRem(key []byte, members ...[]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	removed := 0
 	for _, m := range members {
 		if e.ZSet.Remove(m) {
-			s.addCost(e, -(len(m) + elemOverhead))
+			s.addCost(sh, e, -(len(m) + elemOverhead))
 			removed++
 		}
 	}
 	if e.ZSet.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return removed, nil
 }

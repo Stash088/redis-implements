@@ -4,27 +4,28 @@ package store
 // (left=false) of the list under key, creating it if missing. It returns the
 // new list length.
 func (s *Store) ListPush(key []byte, left bool, vals ...[]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeList, List: newList(), cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeList {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	if left {
 		for i := range vals {
 			e.List.PushFront(vals[i])
-			s.addCost(e, len(vals[i])+elemOverhead)
+			s.addCost(sh, e, len(vals[i])+elemOverhead)
 		}
 	} else {
 		for i := range vals {
 			e.List.PushBack(vals[i])
-			s.addCost(e, len(vals[i])+elemOverhead)
+			s.addCost(sh, e, len(vals[i])+elemOverhead)
 		}
 	}
 	return e.List.Len(), nil
@@ -34,9 +35,10 @@ func (s *Store) ListPush(key []byte, left bool, vals ...[]byte) (int, error) {
 // element. ok is false when the list is empty or the key is missing. The key is
 // deleted once its list becomes empty.
 func (s *Store) ListPop(key []byte, left bool) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return nil, false, nil
 	}
@@ -52,10 +54,10 @@ func (s *Store) ListPop(key []byte, left bool) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	s.addCost(e, -(len(v) + elemOverhead))
+	s.addCost(sh, e, -(len(v) + elemOverhead))
 	if e.List.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return v, true, nil
 }
@@ -105,9 +107,10 @@ func (s *Store) ListIndex(key []byte, i int) ([]byte, bool, error) {
 
 // ListSet replaces the element at index i. It returns false when out of range.
 func (s *Store) ListSet(key []byte, i int, v []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return false, nil
 	}
@@ -115,10 +118,10 @@ func (s *Store) ListSet(key []byte, i int, v []byte) (bool, error) {
 		return false, ErrWrongType
 	}
 	old, _ := e.List.Index(i)
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	okSet := e.List.Set(i, v)
 	if okSet {
-		s.addCost(e, len(v)-len(old))
+		s.addCost(sh, e, len(v)-len(old))
 	}
 	return okSet, nil
 }
@@ -133,28 +136,29 @@ func (s *Store) HashSet(key, field, value []byte) (int, error) {
 // hash if missing. It returns the number of fields that were new. The fields
 // and values slices must have the same length.
 func (s *Store) HashSetMany(key []byte, fields, values [][]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeHash, Hash: make(map[string][]byte), cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeHash {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	added := 0
 	for i := range fields {
 		f := string(fields[i])
 		if old, exists := e.Hash[f]; exists {
 			e.Hash[f] = values[i]
-			s.addCost(e, len(values[i])-len(old))
+			s.addCost(sh, e, len(values[i])-len(old))
 			continue
 		}
 		e.Hash[f] = values[i]
-		s.addCost(e, len(f)+len(values[i]))
+		s.addCost(sh, e, len(f)+len(values[i]))
 		added++
 	}
 	return added, nil
@@ -201,27 +205,28 @@ func (s *Store) HashGetAll(key []byte) ([][]byte, error) {
 // HashDel removes fields from the hash under key, returning the number removed.
 // The key is deleted when its hash becomes empty.
 func (s *Store) HashDel(key []byte, fields ...[]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeHash {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	removed := 0
 	for _, f := range fields {
 		if old, exists := e.Hash[string(f)]; exists {
 			delete(e.Hash, string(f))
-			s.addCost(e, -(len(string(f)) + len(old)))
+			s.addCost(sh, e, -(len(string(f)) + len(old)))
 			removed++
 		}
 	}
 	if len(e.Hash) == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return removed, nil
 }
@@ -288,23 +293,24 @@ func (s *Store) HashVals(key []byte) ([][]byte, error) {
 // SetAdd adds members to the set under key, creating it if missing, and returns
 // the number of newly added members.
 func (s *Store) SetAdd(key []byte, members ...[]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeSet, Set: make(map[string]struct{}), cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	added := 0
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; !exists {
 			e.Set[string(m)] = struct{}{}
-			s.addCost(e, len(m)+elemOverhead)
+			s.addCost(sh, e, len(m)+elemOverhead)
 			added++
 		}
 	}
@@ -314,27 +320,28 @@ func (s *Store) SetAdd(key []byte, members ...[]byte) (int, error) {
 // SetRem removes members from the set under key, returning the number removed.
 // The key is deleted when its set becomes empty.
 func (s *Store) SetRem(key []byte, members ...[]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	removed := 0
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; exists {
 			delete(e.Set, string(m))
-			s.addCost(e, -(len(m) + elemOverhead))
+			s.addCost(sh, e, -(len(m) + elemOverhead))
 			removed++
 		}
 	}
 	if len(e.Set) == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return removed, nil
 }

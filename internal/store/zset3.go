@@ -185,14 +185,19 @@ func (s *Store) ZInterCard(keys [][]byte, limit int) (int, error) {
 	return n, nil
 }
 
-// zsetsOf returns the members and scores of the given sets.
+// zsetsOf returns the members and scores of the given sets. The shards of all
+// keys are read-locked, so the operation sees a consistent picture of them.
 func (s *Store) zsetsOf(keys [][]byte) ([]map[string]float64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	unlock := s.lockRead(keys...)
+	defer unlock()
 	now := s.clock()
 	out := make([]map[string]float64, 0, len(keys))
 	for _, k := range keys {
-		e, ok := s.data[string(k)]
+		sh := s.shardOf(k)
+		e, ok := sh.data[string(k)]
 		if !ok || e.Expired(now) {
 			out = append(out, map[string]float64{})
 			continue
@@ -215,15 +220,16 @@ func weightAt(weights []float64, i int) float64 {
 
 // storeZSet replaces the sorted set under dst with the accumulated members.
 func (s *Store) storeZSet(dst []byte, acc map[string]*zsetOp) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(dst)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	now := s.clock()
-	if e, ok := s.data[string(dst)]; ok {
+	if e, ok := sh.data[string(dst)]; ok {
 		if !e.Expired(now) && e.Type != TypeZSet {
 			return 0, ErrWrongType
 		}
-		s.usedBytes -= e.cost
-		delete(s.data, string(dst))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(dst))
 	}
 	z := newZSet()
 	cost := len(string(dst))
@@ -233,24 +239,25 @@ func (s *Store) storeZSet(dst []byte, acc map[string]*zsetOp) (int, error) {
 	}
 	e := &Entry{Type: TypeZSet, ZSet: z, cost: cost}
 	e.lastAccess.Store(now.UnixNano())
-	s.usedBytes += cost
-	s.data[string(dst)] = e
+	sh.usedBytes += cost
+	sh.data[string(dst)] = e
 	return len(acc), nil
 }
 
 // ZRemRangeByRank removes the members with a rank in the inclusive range
 // [start, stop] and returns the number of removed members.
 func (s *Store) ZRemRangeByRank(key []byte, start, stop int) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	n := e.ZSet.Len()
 	if start < 0 {
 		start += n
@@ -274,12 +281,12 @@ func (s *Store) ZRemRangeByRank(key []byte, start, stop int) (int, error) {
 			break
 		}
 		e.ZSet.Remove(entry.Member)
-		s.addCost(e, -(len(entry.Member) + elemOverhead))
+		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 		removed++
 	}
 	if e.ZSet.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return removed, nil
 }
@@ -287,24 +294,25 @@ func (s *Store) ZRemRangeByRank(key []byte, start, stop int) (int, error) {
 // ZRemRangeByScore removes the members whose score is in the given range and
 // returns the number of removed members.
 func (s *Store) ZRemRangeByScore(key []byte, min, max float64, minExcl, maxExcl bool) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	entries := e.ZSet.RangeByScore(min, max, minExcl, maxExcl, 0, 0)
 	for _, entry := range entries {
 		e.ZSet.Remove(entry.Member)
-		s.addCost(e, -(len(entry.Member) + elemOverhead))
+		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 	}
 	if e.ZSet.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return len(entries), nil
 }
@@ -312,24 +320,25 @@ func (s *Store) ZRemRangeByScore(key []byte, min, max float64, minExcl, maxExcl 
 // ZRemRangeByLex removes the members in the given lexicographical range and
 // returns the number of removed members.
 func (s *Store) ZRemRangeByLex(key []byte, min, max []byte, minExcl, maxExcl bool) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	entries := e.ZSet.RangeByLex(min, max, minExcl, maxExcl, 0, 0)
 	for _, entry := range entries {
 		e.ZSet.Remove(entry.Member)
-		s.addCost(e, -(len(entry.Member) + elemOverhead))
+		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 	}
 	if e.ZSet.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return len(entries), nil
 }
@@ -337,16 +346,17 @@ func (s *Store) ZRemRangeByLex(key []byte, min, max []byte, minExcl, maxExcl boo
 // ZPop removes and returns the members with the lowest (or highest) scores.
 // A count of zero pops a single member.
 func (s *Store) ZPop(key []byte, count int, lowest bool) ([]ZEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return nil, nil
 	}
 	if e.Type != TypeZSet {
 		return nil, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	n := e.ZSet.Len()
 	if n == 0 {
 		return nil, nil
@@ -368,12 +378,12 @@ func (s *Store) ZPop(key []byte, count int, lowest bool) ([]ZEntry, error) {
 			break
 		}
 		e.ZSet.Remove(entry.Member)
-		s.addCost(e, -(len(entry.Member) + elemOverhead))
+		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 		out = append(out, *entry)
 	}
 	if e.ZSet.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return out, nil
 }
@@ -381,11 +391,15 @@ func (s *Store) ZPop(key []byte, count int, lowest bool) ([]ZEntry, error) {
 // ZPopAny pops the member with the lowest (or highest) score from the first
 // non-empty sorted set of the given keys.
 func (s *Store) ZPopAny(keys [][]byte, lowest bool) (key []byte, entry ZEntry, ok bool, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if len(keys) == 0 {
+		return nil, ZEntry{}, false, nil
+	}
+	unlock := s.lockWrite(keys...)
+	defer unlock()
 	now := s.clock()
 	for _, k := range keys {
-		e, ok := s.data[string(k)]
+		sh := s.shardOf(k)
+		e, ok := sh.data[string(k)]
 		if !ok || e.Expired(now) {
 			continue
 		}
@@ -403,12 +417,12 @@ func (s *Store) ZPopAny(keys [][]byte, lowest bool) (key []byte, entry ZEntry, o
 		if entry == nil {
 			continue
 		}
-		s.touchLocked(string(k))
+		s.touchLocked(sh, string(k))
 		e.ZSet.Remove(entry.Member)
-		s.addCost(e, -(len(entry.Member) + elemOverhead))
+		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 		if e.ZSet.Len() == 0 {
-			s.usedBytes -= e.cost
-			delete(s.data, string(k))
+			sh.usedBytes -= e.cost
+			delete(sh.data, string(k))
 		}
 		return k, *entry, true, nil
 	}

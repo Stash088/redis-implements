@@ -6,9 +6,10 @@ import "bytes"
 // the list under key. It returns the new length, -1 when the pivot was not
 // found and 0 when the key does not exist, like Redis does.
 func (s *Store) ListInsert(key []byte, before bool, pivot, value []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
@@ -19,13 +20,13 @@ func (s *Store) ListInsert(key []byte, before bool, pivot, value []byte) (int, e
 	if idx < 0 {
 		return -1, nil
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	if before {
 		e.List.InsertBefore(idx, value)
 	} else {
 		e.List.InsertAfter(idx, value)
 	}
-	s.addCost(e, len(value)+elemOverhead)
+	s.addCost(sh, e, len(value)+elemOverhead)
 	return e.List.Len(), nil
 }
 
@@ -33,16 +34,17 @@ func (s *Store) ListInsert(key []byte, before bool, pivot, value []byte) (int, e
 // positive count removes from the head, a negative one from the tail and
 // zero removes all of them. It returns the number of removed elements.
 func (s *Store) ListRemove(key []byte, count int, value []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeList {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	removed := 0
 	if count >= 0 {
 		for i := 0; i < e.List.Len(); i++ {
@@ -54,7 +56,7 @@ func (s *Store) ListRemove(key []byte, count int, value []byte) (int, error) {
 				continue
 			}
 			e.List.RemoveAt(i)
-			s.addCost(e, -(len(value) + elemOverhead))
+			s.addCost(sh, e, -(len(value) + elemOverhead))
 			removed++
 			i--
 		}
@@ -68,29 +70,30 @@ func (s *Store) ListRemove(key []byte, count int, value []byte) (int, error) {
 				continue
 			}
 			e.List.RemoveAt(i)
-			s.addCost(e, -(len(value) + elemOverhead))
+			s.addCost(sh, e, -(len(value) + elemOverhead))
 			removed++
 		}
 	}
 	if e.List.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return removed, nil
 }
 
 // ListTrim removes the elements outside the inclusive range [start, stop].
 func (s *Store) ListTrim(key []byte, start, stop int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return nil
 	}
 	if e.Type != TypeList {
 		return ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	n := e.List.Len()
 	if start < 0 {
 		start += n
@@ -108,16 +111,16 @@ func (s *Store) ListTrim(key []byte, start, stop int) error {
 	for i := n - 1; i > stop; i-- {
 		v, _ := e.List.Index(i)
 		e.List.RemoveAt(i)
-		s.addCost(e, -(len(v) + elemOverhead))
+		s.addCost(sh, e, -(len(v) + elemOverhead))
 	}
 	for i := 0; i < start && e.List.Len() > 0; i++ {
 		v, _ := e.List.Index(0)
 		e.List.RemoveAt(0)
-		s.addCost(e, -(len(v) + elemOverhead))
+		s.addCost(sh, e, -(len(v) + elemOverhead))
 	}
 	if e.List.Len() == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return nil
 }
@@ -178,20 +181,22 @@ func (s *Store) ListPosition(key []byte, value []byte, rank, count, maxlen int) 
 // ListMove pops an element from one list and pushes it to another. It
 // reports whether an element was moved.
 func (s *Store) ListMove(source, dest []byte, fromLeft, toLeft bool) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	se, ok := s.entryLocked(source)
+	unlock := s.lockWrite(source, dest)
+	defer unlock()
+	srcSh := s.shardOf(source)
+	se, ok := s.entryLocked(srcSh, source)
 	if !ok {
 		return nil, false, nil
 	}
 	if se.Type != TypeList {
 		return nil, false, ErrWrongType
 	}
-	de, ok := s.entryLocked(dest)
+	dstSh := s.shardOf(dest)
+	de, ok := s.entryLocked(dstSh, dest)
 	if !ok {
 		de = &Entry{Type: TypeList, List: newList(), cost: len(string(dest))}
-		s.usedBytes += len(string(dest))
-		s.data[string(dest)] = de
+		dstSh.usedBytes += len(string(dest))
+		dstSh.data[string(dest)] = de
 	} else if de.Type != TypeList {
 		return nil, false, ErrWrongType
 	}
@@ -204,18 +209,18 @@ func (s *Store) ListMove(source, dest []byte, fromLeft, toLeft bool) ([]byte, bo
 	if v == nil {
 		return nil, false, nil
 	}
-	s.touchLocked(string(source))
-	s.touchLocked(string(dest))
-	s.addCost(se, -(len(v) + elemOverhead))
+	s.touchLocked(srcSh, string(source))
+	s.touchLocked(dstSh, string(dest))
+	s.addCost(srcSh, se, -(len(v) + elemOverhead))
 	if toLeft {
 		de.List.PushFront(v)
 	} else {
 		de.List.PushBack(v)
 	}
-	s.addCost(de, len(v)+elemOverhead)
+	s.addCost(dstSh, de, len(v)+elemOverhead)
 	if se.List.Len() == 0 {
-		s.usedBytes -= se.cost
-		delete(s.data, string(source))
+		srcSh.usedBytes -= se.cost
+		delete(srcSh.data, string(source))
 	}
 	return v, true, nil
 }
@@ -224,11 +229,15 @@ func (s *Store) ListMove(source, dest []byte, fromLeft, toLeft bool) ([]byte, bo
 // keys. It returns the key the element came from, and reports whether an
 // element was popped.
 func (s *Store) ListPopAny(keys [][]byte, left bool) (key []byte, value []byte, ok bool, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if len(keys) == 0 {
+		return nil, nil, false, nil
+	}
+	unlock := s.lockWrite(keys...)
+	defer unlock()
 	now := s.clock()
 	for _, k := range keys {
-		e, ok := s.data[string(k)]
+		sh := s.shardOf(k)
+		e, ok := sh.data[string(k)]
 		if !ok || e.Expired(now) {
 			continue
 		}
@@ -244,11 +253,11 @@ func (s *Store) ListPopAny(keys [][]byte, left bool) (key []byte, value []byte, 
 		} else {
 			v, _ = e.List.PopBack()
 		}
-		s.touchLocked(string(k))
-		s.addCost(e, -(len(v) + elemOverhead))
+		s.touchLocked(sh, string(k))
+		s.addCost(sh, e, -(len(v) + elemOverhead))
 		if e.List.Len() == 0 {
-			s.usedBytes -= e.cost
-			delete(s.data, string(k))
+			sh.usedBytes -= e.cost
+			delete(sh.data, string(k))
 		}
 		return k, v, true, nil
 	}
@@ -258,16 +267,17 @@ func (s *Store) ListPopAny(keys [][]byte, left bool) (key []byte, value []byte, 
 // ListPushExist pushes values to an existing list. It reports whether the
 // list existed.
 func (s *Store) ListPushExist(key []byte, left bool, values [][]byte) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, false, nil
 	}
 	if e.Type != TypeList {
 		return 0, false, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	for _, v := range values {
 		if left {
@@ -275,7 +285,7 @@ func (s *Store) ListPushExist(key []byte, left bool, values [][]byte) (int, bool
 		} else {
 			e.List.PushBack(v)
 		}
-		s.addCost(e, len(v)+elemOverhead)
+		s.addCost(sh, e, len(v)+elemOverhead)
 	}
 	return e.List.Len(), true, nil
 }

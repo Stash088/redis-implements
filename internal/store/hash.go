@@ -9,9 +9,10 @@ import (
 // HashIncrBy increments the integer value of a hash field by delta. The field
 // is created with the value 0 when it does not exist.
 func (s *Store) HashIncrBy(key, field []byte, delta int64) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, err := s.hashEntryForWriteLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, err := s.hashEntryForWriteLocked(sh, key)
 	if err != nil {
 		return 0, err
 	}
@@ -31,16 +32,17 @@ func (s *Store) HashIncrBy(key, field []byte, delta int64) (int64, error) {
 		return 0, ErrOverflow
 	}
 	current += delta
-	s.setHashFieldLocked(e, f, []byte(strconv.FormatInt(current, 10)))
+	s.setHashFieldLocked(sh, e, f, []byte(strconv.FormatInt(current, 10)))
 	return current, nil
 }
 
 // HashIncrByFloat increments the float value of a hash field by delta. The
 // field is created with the value 0 when it does not exist.
 func (s *Store) HashIncrByFloat(key, field []byte, delta float64) (float64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, err := s.hashEntryForWriteLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, err := s.hashEntryForWriteLocked(sh, key)
 	if err != nil {
 		return 0, err
 	}
@@ -57,38 +59,38 @@ func (s *Store) HashIncrByFloat(key, field []byte, delta float64) (float64, erro
 	if math.IsInf(result, 0) || math.IsNaN(result) {
 		return 0, ErrNotFloat
 	}
-	s.setHashFieldLocked(e, f, []byte(FormatFloat(result)))
+	s.setHashFieldLocked(sh, e, f, []byte(FormatFloat(result)))
 	return result, nil
 }
 
 // hashEntryForWriteLocked returns the hash under key, creating it when it is
-// missing. Callers must hold s.mu.
-func (s *Store) hashEntryForWriteLocked(key []byte) (*Entry, error) {
-	e, ok := s.entryLocked(key)
+// missing. Callers must hold the write lock of the shard that owns the key.
+func (s *Store) hashEntryForWriteLocked(sh *shard, key []byte) (*Entry, error) {
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeHash, Hash: make(map[string][]byte), cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 		return e, nil
 	}
 	if e.Type != TypeHash {
 		return nil, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	return e, nil
 }
 
 // setHashFieldLocked stores a field of a hash, updating the memory accounting.
-// Callers must hold s.mu.
-func (s *Store) setHashFieldLocked(e *Entry, field string, value []byte) {
+// Callers must hold the write lock of the shard that owns the key.
+func (s *Store) setHashFieldLocked(sh *shard, e *Entry, field string, value []byte) {
 	if old, ok := e.Hash[field]; ok {
 		e.Hash[field] = value
-		s.addCost(e, len(value)-len(old))
+		s.addCost(sh, e, len(value)-len(old))
 		return
 	}
 	e.Hash[field] = value
-	s.addCost(e, len(field)+len(value))
+	s.addCost(sh, e, len(field)+len(value))
 }
 
 // HashStrLen returns the length of the value of a hash field. It is 0 when the
@@ -140,9 +142,10 @@ func (s *Store) HashMGet(key []byte, fields [][]byte) ([][]byte, error) {
 // HashSetNX sets the value of a hash field only when the field does not exist.
 // It reports whether the field was set.
 func (s *Store) HashSetNX(key, field, value []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, err := s.hashEntryForWriteLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, err := s.hashEntryForWriteLocked(sh, key)
 	if err != nil {
 		return false, err
 	}
@@ -150,7 +153,7 @@ func (s *Store) HashSetNX(key, field, value []byte) (bool, error) {
 	if _, exists := e.Hash[f]; exists {
 		return false, nil
 	}
-	s.setHashFieldLocked(e, f, value)
+	s.setHashFieldLocked(sh, e, f, value)
 	return true, nil
 }
 
@@ -221,17 +224,18 @@ func (s *Store) hashFieldList(key []byte) ([][]byte, error) {
 // HashGetDel removes the given fields of the hash and returns their values. A
 // field that does not exist yields a nil value, like Redis does.
 func (s *Store) HashGetDel(key []byte, fields ...[]byte) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	out := make([][]byte, len(fields))
-	e, ok := s.entryLocked(key)
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return out, nil
 	}
 	if e.Type != TypeHash {
 		return nil, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	for i, f := range fields {
 		name := string(f)
 		old, exists := e.Hash[name]
@@ -240,11 +244,11 @@ func (s *Store) HashGetDel(key []byte, fields ...[]byte) ([][]byte, error) {
 		}
 		out[i] = old
 		delete(e.Hash, name)
-		s.addCost(e, -(len(name) + len(old)))
+		s.addCost(sh, e, -(len(name) + len(old)))
 	}
 	if len(e.Hash) == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return out, nil
 }

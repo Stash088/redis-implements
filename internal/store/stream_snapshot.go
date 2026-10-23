@@ -206,15 +206,16 @@ func (s *Store) RestoreStream(key []byte, snap *StreamSnapshot) error {
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	cost := len(string(key))
-	s.touchKeyLocked(key)
-	if old, ok := s.data[string(key)]; ok {
-		s.usedBytes -= old.cost
+	s.touchKeyLocked(sh, key)
+	if old, ok := sh.data[string(key)]; ok {
+		sh.usedBytes -= old.cost
 	}
-	s.usedBytes += cost + streamCost(st)
-	s.data[string(key)] = &Entry{Type: TypeStream, Stream: st, cost: cost}
+	sh.usedBytes += cost + streamCost(st)
+	sh.data[string(key)] = &Entry{Type: TypeStream, Stream: st, cost: cost}
 	return nil
 }
 

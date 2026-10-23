@@ -94,22 +94,23 @@ func (s *Store) ZLexCount(key []byte, min, max []byte, minExcl, maxExcl bool) (i
 // ZIncrBy increments the score of a member and returns the new score. The
 // member is created with the score 0 when it does not exist.
 func (s *Store) ZIncrBy(key []byte, delta float64, member []byte) (float64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeZSet, ZSet: newZSet(), cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 	old, exists := e.ZSet.Score(member)
 	if !exists {
 		old = 0
-		s.addCost(e, len(member)+elemOverhead)
+		s.addCost(sh, e, len(member)+elemOverhead)
 	}
 	score := old + delta
 	if math.IsInf(score, 0) || math.IsNaN(score) {

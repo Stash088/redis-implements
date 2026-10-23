@@ -25,11 +25,15 @@ func FormatFloat(f float64) string {
 // MGET.
 func (s *Store) GetStrings(keys ...[]byte) [][]byte {
 	out := make([][]byte, len(keys))
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	if len(keys) == 0 {
+		return out
+	}
+	unlock := s.lockRead(keys...)
+	defer unlock()
 	now := s.clock()
 	for i, key := range keys {
-		e, ok := s.data[string(key)]
+		sh := s.shardOf(key)
+		e, ok := sh.data[string(key)]
 		if !ok || e.Expired(now) || e.Type != TypeString {
 			continue
 		}
@@ -45,58 +49,68 @@ func (s *Store) SetStrings(pairs [][]byte, onlyIfAbsent bool) bool {
 	if len(pairs)%2 != 0 {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if len(pairs) == 0 {
+		return true
+	}
+	keys := make([][]byte, 0, len(pairs)/2)
+	for i := 0; i < len(pairs); i += 2 {
+		keys = append(keys, pairs[i])
+	}
+	unlock := s.lockWrite(keys...)
+	defer unlock()
 	now := s.clock()
 	if onlyIfAbsent {
 		for i := 0; i < len(pairs); i += 2 {
-			if e, ok := s.data[string(pairs[i])]; ok && !e.Expired(now) {
+			sh := s.shardOf(pairs[i])
+			if e, ok := sh.data[string(pairs[i])]; ok && !e.Expired(now) {
 				return false
 			}
 		}
 	}
 	for i := 0; i < len(pairs); i += 2 {
-		s.setStringLocked(pairs[i], pairs[i+1], time.Time{})
+		s.setStringLocked(s.shardOf(pairs[i]), pairs[i], pairs[i+1], time.Time{})
 	}
 	return true
 }
 
 // setStringLocked stores a string value, replacing whatever was under key.
-// Callers must hold s.mu.
-func (s *Store) setStringLocked(key, value []byte, expiresAt time.Time) {
+// Callers must hold the write lock of the shard that owns the key.
+func (s *Store) setStringLocked(sh *shard, key, value []byte, expiresAt time.Time) {
 	k := string(key)
-	s.touchLocked(k)
+	s.touchLocked(sh, k)
 	cost := len(k) + len(value)
-	s.usedBytes += cost
-	if e, ok := s.data[k]; ok {
-		s.usedBytes -= e.cost
+	sh.usedBytes += cost
+	if e, ok := sh.data[k]; ok {
+		sh.usedBytes -= e.cost
 	}
 	e := &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost}
 	e.lastAccess.Store(s.clock().UnixNano())
-	s.data[k] = e
+	sh.data[k] = e
 }
 
 // GetSet sets the value of key and returns the previous value. The TTL of the
 // key is cleared, like Redis does.
 func (s *Store) GetSet(key, value []byte) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	var old []byte
-	if e, ok := s.entryLocked(key); ok {
+	if e, ok := s.entryLocked(sh, key); ok {
 		if e.Type != TypeString {
 			return nil, false, ErrWrongType
 		}
 		old = e.Str
 	}
-	s.setStringLocked(key, value, time.Time{})
+	s.setStringLocked(sh, key, value, time.Time{})
 	return old, old != nil, nil
 }
 
 // GetDel returns the value of key and deletes it.
 func (s *Store) GetDel(key []byte) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return nil, false, nil
 	}
@@ -104,18 +118,19 @@ func (s *Store) GetDel(key []byte) ([]byte, bool, error) {
 		return nil, false, ErrWrongType
 	}
 	v := e.Str
-	s.touchKeyLocked(key)
-	s.usedBytes -= e.cost
-	delete(s.data, string(key))
+	s.touchKeyLocked(sh, key)
+	sh.usedBytes -= e.cost
+	delete(sh.data, string(key))
 	return v, true, nil
 }
 
 // GetEx returns the value of key and optionally changes its expiration:
 // expiresAt is the new absolute expiration, and clearTTL removes it.
 func (s *Store) GetEx(key []byte, expiresAt time.Time, clearTTL bool) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return nil, false, nil
 	}
@@ -123,7 +138,7 @@ func (s *Store) GetEx(key []byte, expiresAt time.Time, clearTTL bool) ([]byte, b
 		return nil, false, ErrWrongType
 	}
 	v := e.Str
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	if clearTTL {
 		e.ExpiresAt = time.Time{}
 	} else {
@@ -134,21 +149,23 @@ func (s *Store) GetEx(key []byte, expiresAt time.Time, clearTTL bool) ([]byte, b
 
 // SetEx sets the value of key with a TTL.
 func (s *Store) SetEx(key, value []byte, ttl time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.setStringLocked(key, value, s.clock().Add(ttl))
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s.setStringLocked(sh, key, value, s.clock().Add(ttl))
 }
 
 // SetNX sets the value of key only when it does not exist. It reports whether
 // the value was set.
 func (s *Store) SetNX(key, value []byte) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	now := s.clock()
-	if e, ok := s.data[string(key)]; ok && !e.Expired(now) {
+	if e, ok := sh.data[string(key)]; ok && !e.Expired(now) {
 		return false
 	}
-	s.setStringLocked(key, value, time.Time{})
+	s.setStringLocked(sh, key, value, time.Time{})
 	return true
 }
 
@@ -193,17 +210,18 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 	if offset < 0 {
 		return 0, ErrOffsetOutOfRange
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeString, Str: []byte{}, cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeString {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 
 	end := offset + int64(len(value))
 	// The value is never modified in place: readers may still be copying the
@@ -215,7 +233,7 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 	grown := make([]byte, newLen)
 	copy(grown, e.Str)
 	copy(grown[offset:], value)
-	s.addCost(e, newLen-len(e.Str))
+	s.addCost(sh, e, newLen-len(e.Str))
 	e.Str = grown
 	return len(e.Str), nil
 }
@@ -223,11 +241,12 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 // IncrByFloat increments the value of key by delta and stores the result as a
 // string. It returns the new value.
 func (s *Store) IncrByFloat(key []byte, delta float64) (float64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	var current float64
 	var expiresAt time.Time
-	if e, ok := s.entryLocked(key); ok {
+	if e, ok := s.entryLocked(sh, key); ok {
 		if e.Type != TypeString {
 			return 0, ErrWrongType
 		}
@@ -242,6 +261,6 @@ func (s *Store) IncrByFloat(key []byte, delta float64) (float64, error) {
 	if math.IsInf(result, 0) || math.IsNaN(result) {
 		return 0, ErrNotFloat
 	}
-	s.setStringLocked(key, []byte(FormatFloat(result)), expiresAt)
+	s.setStringLocked(sh, key, []byte(FormatFloat(result)), expiresAt)
 	return result, nil
 }

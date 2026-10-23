@@ -7,17 +7,21 @@ import (
 )
 
 // checkConsistency asserts that usedBytes equals the recomputed sum of entry
-// costs (plus dangling-watch costs are impossible: all data is in s.data).
+// costs in every shard (plus dangling-watch costs are impossible: all data is
+// in the shards' maps).
 func checkConsistency(t *testing.T, s *Store) {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sum := 0
-	for k, e := range s.data {
-		sum += s.entryCostLocked(k, e)
-	}
-	if sum != s.usedBytes {
-		t.Fatalf("usedBytes=%d, recomputed=%d", s.usedBytes, sum)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		sum := 0
+		for k, e := range sh.data {
+			sum += s.entryCostLocked(k, e)
+		}
+		if sum != sh.usedBytes {
+			t.Fatalf("shard %d: usedBytes=%d, recomputed=%d", i, sh.usedBytes, sum)
+		}
+		sh.mu.Unlock()
 	}
 }
 
