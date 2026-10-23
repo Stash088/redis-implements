@@ -248,6 +248,20 @@ func (s *Store) expireKey(k string) {
 	delete(s.data, k)
 }
 
+// copyByteSlices returns a copy of the slice of byte slices.
+//
+// The store keeps the byte buffers it is given (the RESP reader allocates a
+// fresh buffer per argument, so those are safe to keep), but not the slice
+// itself: the caller may reuse it for the next command.
+func copyByteSlices(vals [][]byte) [][]byte {
+	if len(vals) == 0 {
+		return nil
+	}
+	out := make([][]byte, len(vals))
+	copy(out, vals)
+	return out
+}
+
 // newStringEntry replaces whatever is stored under key with a string entry.
 // Callers must hold s.mu.
 func (s *Store) newStringEntry(key []byte, value []byte, expiresAt time.Time) {

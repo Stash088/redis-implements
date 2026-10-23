@@ -71,6 +71,14 @@ type client struct {
 	name    string
 	created time.Time
 	lastCmd string
+
+	// ctx and args are reused by the command loop: the connection handles
+	// one command at a time, so the per-command context and the slice of
+	// arguments do not have to be allocated again for every command.
+	// Anything that keeps the arguments beyond the command (the MULTI
+	// queue, a blocking wait, the slow log) copies them first.
+	ctx  Ctx
+	args [][]byte
 }
 
 func newClient(conn net.Conn) *client {

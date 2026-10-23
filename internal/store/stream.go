@@ -496,7 +496,9 @@ func (s *Store) StreamAdd(key []byte, mode StreamIDMode, id StreamID, fields [][
 	if err != nil {
 		return StreamID{}, err
 	}
-	entry := StreamEntry{ID: newID, Fields: fields}
+	// The field list is copied: the caller reuses its argument buffer, and
+	// the entry has to own the slice it keeps.
+	entry := StreamEntry{ID: newID, Fields: copyByteSlices(fields)}
 	st.entries = append(st.entries, entry)
 	st.lastID = newID
 	st.entriesAdded++

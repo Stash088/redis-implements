@@ -246,6 +246,7 @@ func (s *Server) registerCommands() {
 // command name itself), a negative n means at least |n| arguments. It backs
 // the queue-time validation of commands inside MULTI, like Redis does.
 type cmdSpec struct {
+	name    string // canonical (lower case) name of the command
 	handler Handler
 	arity   int
 	write   bool // mutates the dataset: the command is propagated to the AOF
@@ -253,32 +254,57 @@ type cmdSpec struct {
 	memAdd  bool // can grow the dataset: denied under noeviction when over the limit
 }
 
+// register stores a command in the registry under both its lower case and its
+// upper case spelling.
+func (s *Server) register(spec cmdSpec) {
+	s.cmds[spec.name] = spec
+	s.cmdsUpper[strings.ToUpper(spec.name)] = spec
+}
+
+// lookupCommand finds a command by the bytes the client sent, without
+// allocating. Clients may spell a command in any case; the two common
+// spellings are covered by two maps, so the hot path never builds a string.
+func (s *Server) lookupCommand(cmd []byte) (cmdSpec, bool) {
+	// A map lookup with a []byte key does not copy the bytes.
+	if sp, ok := s.cmdsUpper[string(cmd)]; ok {
+		return sp, true
+	}
+	if sp, ok := s.cmds[string(cmd)]; ok {
+		return sp, true
+	}
+	// Mixed case: rare, fall back to the slow path.
+	if sp, ok := s.cmds[strings.ToLower(string(cmd))]; ok {
+		return sp, true
+	}
+	return cmdSpec{}, false
+}
+
 // reg registers a read-only command.
 func (s *Server) reg(name string, arity int, h Handler) {
-	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity}
+	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity})
 }
 
 // regW registers a command that mutates the dataset: it is propagated to the
 // AOF after execution.
 func (s *Server) regW(name string, arity int, h Handler) {
-	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true}
+	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true})
 }
 
 // regWG registers a command that mutates the dataset and can grow it.
 func (s *Server) regWG(name string, arity int, h Handler) {
-	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true, memAdd: true}
+	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true, memAdd: true})
 }
 
 // regWS registers a command that mutates the dataset and propagates itself
 // to the AOF.
 func (s *Server) regWS(name string, arity int, h Handler) {
-	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true, aofSelf: true}
+	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true, aofSelf: true})
 }
 
 // regWSG registers a command that mutates the dataset, can grow it and
 // propagates itself to the AOF.
 func (s *Server) regWSG(name string, arity int, h Handler) {
-	s.cmds[strings.ToLower(name)] = cmdSpec{handler: h, arity: arity, write: true, aofSelf: true, memAdd: true}
+	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true, aofSelf: true, memAdd: true})
 }
 
 func wrongArgs(w *resp.Writer, cmd string) {

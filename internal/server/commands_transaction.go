@@ -54,7 +54,13 @@ func (s *Server) queueForMulti(ctx *Ctx, name string) {
 		c.abort = true
 		return
 	}
-	c.queue = append(c.queue, ctx.Args)
+	// The queue outlives the command, so the arguments are copied: the
+	// connection reuses its argument buffer for the next command.
+	queued := make([][]byte, len(ctx.Args))
+	for i, a := range ctx.Args {
+		queued[i] = append([]byte(nil), a...)
+	}
+	c.queue = append(c.queue, queued)
 	ctx.W.WriteSimpleString("QUEUED")
 }
 

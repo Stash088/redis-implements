@@ -63,13 +63,16 @@ func (sl *slowlog) maybeAdd(args [][]byte, addr, name string, dur time.Duration)
 	if int64(dur.Microseconds()) < sl.thresh {
 		return
 	}
-	// Args slices are freshly allocated per command by the RESP reader, so
-	// retaining them is safe.
+	// The connection reuses its argument buffer, so the entry keeps a copy.
+	kept := make([][]byte, len(args))
+	for i, a := range args {
+		kept[i] = append([]byte(nil), a...)
+	}
 	e := slowlogEntry{
 		id:   sl.nextID.Add(1),
 		at:   time.Now(),
 		dur:  dur,
-		args: args,
+		args: kept,
 		addr: addr,
 		name: name,
 	}
