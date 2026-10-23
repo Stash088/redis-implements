@@ -104,7 +104,7 @@ func (s *Store) GetDel(key []byte) ([]byte, bool, error) {
 		return nil, false, ErrWrongType
 	}
 	v := e.Str
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.usedBytes -= e.cost
 	delete(s.data, string(key))
 	return v, true, nil
@@ -123,7 +123,7 @@ func (s *Store) GetEx(key []byte, expiresAt time.Time, clearTTL bool) ([]byte, b
 		return nil, false, ErrWrongType
 	}
 	v := e.Str
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	if clearTTL {
 		e.ExpiresAt = time.Time{}
 	} else {
@@ -203,17 +203,20 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 	} else if e.Type != TypeString {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 
 	end := offset + int64(len(value))
-	if end > int64(len(e.Str)) {
-		// Grow the string with zero bytes.
-		grown := make([]byte, end)
-		copy(grown, e.Str)
-		s.addCost(e, int(end)-len(e.Str))
-		e.Str = grown
+	// The value is never modified in place: readers may still be copying the
+	// old buffer into a socket, so SETRANGE builds a new one and publishes it.
+	newLen := len(e.Str)
+	if end > int64(newLen) {
+		newLen = int(end)
 	}
-	copy(e.Str[offset:], value)
+	grown := make([]byte, newLen)
+	copy(grown, e.Str)
+	copy(grown[offset:], value)
+	s.addCost(e, newLen-len(e.Str))
+	e.Str = grown
 	return len(e.Str), nil
 }
 

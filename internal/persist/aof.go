@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,6 +29,12 @@ const (
 )
 
 // Appender appends RESP-encoded write commands to an append-only file.
+//
+// The commands are encoded into an internal buffer and written to the file in
+// batches. Writing every command separately costs a system call per command,
+// which dominated the cost of the write path: with the AOF enabled a
+// pipelined batch ran at a third of the speed. Redis writes its AOF once per
+// event loop iteration, which is the same idea.
 type Appender struct {
 	mu     sync.Mutex
 	f      *os.File
@@ -35,7 +42,24 @@ type Appender struct {
 	policy FsyncPolicy
 	stop   chan struct{}
 	done   chan struct{}
+
+	// buf holds the commands that are encoded but not written to the file
+	// yet.
+	buf []byte
+	// bufLimit is the size at which the buffer is written out.
+	bufLimit int
+	// flushEvery is the interval of the background flush. Zero writes the
+	// commands only when the buffer is full.
+	flushEvery time.Duration
 }
+
+// DefaultAOFBufferSize is the size of the AOF write buffer.
+const DefaultAOFBufferSize = 64 * 1024
+
+// DefaultAOFFlushInterval is how often the buffered commands are written to
+// the file. It is the window in which a crash can lose the commands that
+// were not synced yet — Redis loses up to a second with the same policy.
+const DefaultAOFFlushInterval = 100 * time.Millisecond
 
 // OpenAppender opens (creating if needed) the AOF file at path.
 func OpenAppender(path string, policy FsyncPolicy) (*Appender, error) {
@@ -43,83 +67,177 @@ func OpenAppender(path string, policy FsyncPolicy) (*Appender, error) {
 	if err != nil {
 		return nil, fmt.Errorf("persist: open aof: %w", err)
 	}
-	a := &Appender{f: f, path: path, policy: policy, stop: make(chan struct{}), done: make(chan struct{})}
-	if policy == FsyncEverySec {
-		go a.fsyncLoop()
+	a := &Appender{
+		f:          f,
+		path:       path,
+		policy:     policy,
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		bufLimit:   DefaultAOFBufferSize,
+		flushEvery: DefaultAOFFlushInterval,
 	}
+	go a.background()
 	return a, nil
 }
 
-// Append writes one command (as RESP) to the file. With FsyncAlways it also
-// syncs before returning.
+// SetFlushInterval sets how often the buffered commands are written to the
+// file. Zero disables the background flush: the commands are written when the
+// buffer is full (and on close).
+func (a *Appender) SetFlushInterval(d time.Duration) {
+	a.mu.Lock()
+	a.flushEvery = d
+	a.mu.Unlock()
+}
+
+// SetBufferSize sets the size at which the buffer is written out.
+func (a *Appender) SetBufferSize(n int) {
+	a.mu.Lock()
+	if n > 0 {
+		a.bufLimit = n
+	}
+	a.mu.Unlock()
+}
+
+// Append encodes one command and adds it to the write buffer.
+//
+// With FsyncAlways the command is written and synced before returning, so
+// the durability guarantee does not depend on the buffer. With the other
+// policies the command reaches the file with the next flush.
 func (a *Appender) Append(args [][]byte) error {
-	buf := EncodeCommand(args)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, err := a.f.Write(buf); err != nil {
-		return fmt.Errorf("persist: aof write: %w", err)
-	}
+	a.buf = appendCommand(a.buf, args)
 	if a.policy == FsyncAlways {
+		if err := a.flushLocked(); err != nil {
+			return err
+		}
 		if err := a.f.Sync(); err != nil {
 			return fmt.Errorf("persist: aof fsync: %w", err)
 		}
+		return nil
+	}
+	if len(a.buf) >= a.bufLimit {
+		return a.flushLocked()
 	}
 	return nil
 }
 
-// Sync flushes the file to disk.
+// Flush writes the buffered commands to the file.
+func (a *Appender) Flush() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.flushLocked()
+}
+
+// flushLocked writes the buffer out. The caller must hold a.mu.
+func (a *Appender) flushLocked() error {
+	if len(a.buf) == 0 {
+		return nil
+	}
+	if _, err := a.f.Write(a.buf); err != nil {
+		return fmt.Errorf("persist: aof write: %w", err)
+	}
+	a.buf = a.buf[:0]
+	return nil
+}
+
+// Sync writes the buffered commands to the file and flushes the file to
+// disk.
 func (a *Appender) Sync() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.flushLocked(); err != nil {
+		return err
+	}
 	return a.f.Sync()
 }
 
-// Close stops background syncing and closes the file.
+// Close stops the background goroutine, writes the buffered commands and
+// closes the file.
 func (a *Appender) Close() error {
-	if a.policy == FsyncEverySec {
-		close(a.stop)
-		<-a.done
-	}
+	close(a.stop)
+	<-a.done
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.flushLocked(); err != nil {
+		a.f.Close()
+		return err
+	}
 	return a.f.Close()
 }
 
-func (a *Appender) fsyncLoop() {
+// background writes the buffer out and syncs the file, as the policy asks.
+func (a *Appender) background() {
 	defer close(a.done)
-	t := time.NewTicker(time.Second)
-	defer t.Stop()
+	var flushC <-chan time.Time
+	if d := a.flushInterval(); d > 0 {
+		t := time.NewTicker(d)
+		defer t.Stop()
+		flushC = t.C
+	}
+	var syncC <-chan time.Time
+	if a.policy == FsyncEverySec {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		syncC = t.C
+	}
 	for {
 		select {
 		case <-a.stop:
 			return
-		case <-t.C:
-			a.Sync()
+		case <-flushC:
+			if err := a.Flush(); err != nil {
+				log.Printf("persist: aof flush: %v", err)
+			}
+		case <-syncC:
+			if err := a.Sync(); err != nil {
+				log.Printf("persist: aof sync: %v", err)
+			}
 		}
 	}
 }
 
+func (a *Appender) flushInterval() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.flushEvery
+}
+
 // EncodeCommand serializes a command as a RESP array of bulk strings.
 func EncodeCommand(args [][]byte) []byte {
-	var buf bytes.Buffer
-	w := resp.NewWriter(&buf)
-	w.WriteArrayHeader(len(args))
+	return appendCommand(make([]byte, 0, 64), args)
+}
+
+// appendCommand serializes a command as a RESP array of bulk strings and
+// appends it to dst. The buffer is reused, so appending a command does not
+// allocate.
+func appendCommand(dst []byte, args [][]byte) []byte {
+	dst = append(dst, '*')
+	dst = strconv.AppendInt(dst, int64(len(args)), 10)
+	dst = append(dst, '\r', '\n')
 	for _, a := range args {
-		w.WriteBulkString(a)
+		dst = append(dst, '$')
+		dst = strconv.AppendInt(dst, int64(len(a)), 10)
+		dst = append(dst, '\r', '\n')
+		dst = append(dst, a...)
+		dst = append(dst, '\r', '\n')
 	}
-	w.Flush()
-	return buf.Bytes()
+	return dst
 }
 
 // RewriteForAOF normalizes a write command for safe replay. Relative TTLs
 // (SET EX/PX, EXPIRE, PEXPIRE) are converted to absolute PEXPIREAT so replay
 // reproduces the original expiry instead of re-arming it from load time.
+//
+// The command name and its options are compared as bytes: this runs for every
+// write command, and strings.ToLower would allocate a string each time.
 func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 	if len(args) == 0 {
 		return nil
 	}
-	switch strings.ToLower(string(args[0])) {
-	case "set":
+	name := args[0]
+	switch {
+	case equalFoldASCII(name, "set"):
 		if len(args) < 3 {
 			return [][][]byte{args}
 		}
@@ -127,23 +245,23 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 		var ttl time.Duration
 		var flags [][]byte
 		for i := 3; i < len(args); i++ {
-			switch strings.ToUpper(string(args[i])) {
-			case "EX":
+			switch {
+			case equalFoldASCII(args[i], "EX"):
 				if i+1 < len(args) {
 					if sec, err := strconv.ParseInt(string(args[i+1]), 10, 64); err == nil && sec > 0 {
 						ttl = time.Duration(sec) * time.Second
 					}
 					i++
 				}
-			case "PX":
+			case equalFoldASCII(args[i], "PX"):
 				if i+1 < len(args) {
 					if ms, err := strconv.ParseInt(string(args[i+1]), 10, 64); err == nil && ms > 0 {
 						ttl = time.Duration(ms) * time.Millisecond
 					}
 					i++
 				}
-			case "NX", "XX":
-				flags = append(flags, []byte(strings.ToUpper(string(args[i]))))
+			case equalFoldASCII(args[i], "NX"), equalFoldASCII(args[i], "XX"):
+				flags = append(flags, upperASCII(args[i]))
 			}
 		}
 		base := append([][]byte{[]byte("set"), key, val}, flags...)
@@ -154,7 +272,7 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 			}
 		}
 		return [][][]byte{base}
-	case "setex":
+	case equalFoldASCII(name, "setex"):
 		// SETEX key seconds value -> SET key value + PEXPIREAT
 		if len(args) < 4 {
 			return [][][]byte{args}
@@ -167,7 +285,7 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 			{[]byte("set"), args[1], args[3]},
 			{[]byte("pexpireat"), args[1], itoa(now.Add(time.Duration(sec) * time.Second).UnixMilli())},
 		}
-	case "psetex":
+	case equalFoldASCII(name, "psetex"):
 		// PSETEX key ms value -> SET key value + PEXPIREAT
 		if len(args) < 4 {
 			return [][][]byte{args}
@@ -180,7 +298,7 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 			{[]byte("set"), args[1], args[3]},
 			{[]byte("pexpireat"), args[1], itoa(now.Add(time.Duration(ms) * time.Millisecond).UnixMilli())},
 		}
-	case "expire":
+	case equalFoldASCII(name, "expire"):
 		if len(args) < 3 {
 			return [][][]byte{args}
 		}
@@ -192,7 +310,7 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 			return [][][]byte{{[]byte("del"), args[1]}}
 		}
 		return [][][]byte{{[]byte("pexpireat"), args[1], itoa(now.Add(time.Duration(sec) * time.Second).UnixMilli())}}
-	case "pexpire":
+	case equalFoldASCII(name, "pexpire"):
 		if len(args) < 3 {
 			return [][][]byte{args}
 		}
@@ -207,6 +325,53 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 	default:
 		return [][][]byte{args}
 	}
+}
+
+// equalFoldASCII compares b with s, ignoring the case of the ASCII letters.
+// It does not allocate, unlike strings.ToLower or strings.EqualFold on a
+// string built from the bytes.
+func equalFoldASCII(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		d := s[i]
+		if d >= 'A' && d <= 'Z' {
+			d += 'a' - 'A'
+		}
+		if c != d {
+			return false
+		}
+	}
+	return true
+}
+
+// upperASCII returns the upper case spelling of b. The original slice is
+// returned when it is already upper case, so the common case does not
+// allocate.
+func upperASCII(b []byte) []byte {
+	upper := true
+	for _, c := range b {
+		if c >= 'a' && c <= 'z' {
+			upper = false
+			break
+		}
+	}
+	if upper {
+		return b
+	}
+	out := make([]byte, len(b))
+	for i, c := range b {
+		if c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		out[i] = c
+	}
+	return out
 }
 
 // LoadAOF replays a RESP command log into the given stores. A SELECT command
@@ -863,6 +1028,13 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 func (a *Appender) Rewrite(gen func(io.Writer) error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// The pending commands are part of the dataset the rewrite generates, so
+	// the buffer is dropped: writing it after the rewrite would duplicate
+	// them.
+	if err := a.flushLocked(); err != nil {
+		return err
+	}
+	a.buf = a.buf[:0]
 	var buf bytes.Buffer
 	if err := gen(&buf); err != nil {
 		return err

@@ -135,7 +135,7 @@ func (s *Store) ZAdd(key []byte, score float64, member []byte) (int, error) {
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	if _, exists := e.ZSet.dict[string(member)]; !exists {
 		s.addCost(e, len(member)+elemOverhead)
@@ -180,7 +180,7 @@ func (s *Store) ZRem(key []byte, members ...[]byte) (int, error) {
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	removed := 0
 	for _, m := range members {
 		if e.ZSet.Remove(m) {

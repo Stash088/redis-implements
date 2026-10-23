@@ -19,7 +19,7 @@ func (s *Store) ListInsert(key []byte, before bool, pivot, value []byte) (int, e
 	if idx < 0 {
 		return -1, nil
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	if before {
 		e.List.InsertBefore(idx, value)
 	} else {
@@ -42,7 +42,7 @@ func (s *Store) ListRemove(key []byte, count int, value []byte) (int, error) {
 	if e.Type != TypeList {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	removed := 0
 	if count >= 0 {
 		for i := 0; i < e.List.Len(); i++ {
@@ -90,7 +90,7 @@ func (s *Store) ListTrim(key []byte, start, stop int) error {
 	if e.Type != TypeList {
 		return ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	n := e.List.Len()
 	if start < 0 {
 		start += n
@@ -267,7 +267,7 @@ func (s *Store) ListPushExist(key []byte, left bool, values [][]byte) (int, bool
 	if e.Type != TypeList {
 		return 0, false, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	for _, v := range values {
 		if left {

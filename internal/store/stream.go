@@ -488,7 +488,7 @@ func (s *Store) StreamAdd(key []byte, mode StreamIDMode, id StreamID, fields [][
 	} else if e.Type != TypeStream {
 		return StreamID{}, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -496,7 +496,9 @@ func (s *Store) StreamAdd(key []byte, mode StreamIDMode, id StreamID, fields [][
 	if err != nil {
 		return StreamID{}, err
 	}
-	entry := StreamEntry{ID: newID, Fields: fields}
+	// The field list is copied: the caller reuses its argument buffer, and
+	// the entry has to own the slice it keeps.
+	entry := StreamEntry{ID: newID, Fields: copyByteSlices(fields)}
 	st.entries = append(st.entries, entry)
 	st.lastID = newID
 	st.entriesAdded++
@@ -595,7 +597,7 @@ func (s *Store) StreamDelete(key []byte, ids []StreamID) (int, error) {
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -627,7 +629,7 @@ func (s *Store) StreamTrim(key []byte, t StreamTrim) (int, error) {
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -703,7 +705,7 @@ func (s *Store) StreamSetID(key []byte, id StreamID, entriesAdded uint64, setEnt
 	if e.Type != TypeStream {
 		return ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
