@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -78,6 +81,17 @@ func main() {
 	srv.SetSlowlog(cfg.SlowlogSlowerThan, cfg.SlowlogMaxLen)
 	srv.SetAppendFsync(cfg.AppendFsync)
 	log.Printf("server: listening on %s (dir=%s)", srv.Addr(), cfg.Dir)
+
+	if cfg.PprofPort > 0 {
+		// The pprof endpoints make it possible to profile the running
+		// server under load, not only the Go benchmarks.
+		go func() {
+			log.Printf("server: pprof on http://127.0.0.1:%d/debug/pprof/", cfg.PprofPort)
+			if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", cfg.PprofPort), nil); err != nil {
+				log.Printf("server: pprof: %v", err)
+			}
+		}()
+	}
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
