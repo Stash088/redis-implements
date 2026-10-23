@@ -36,6 +36,10 @@ type Config struct {
 
 	// RequirePass is the password clients must authenticate with.
 	RequirePass string
+
+	// PprofPort enables the net/http/pprof endpoints on 127.0.0.1
+	// (0 disables them).
+	PprofPort int
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -114,11 +118,15 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&c.SlowlogMaxLen, "slowlog-max-len", c.SlowlogMaxLen, "number of slow log entries to keep")
 	fs.IntVar(&c.Databases, "databases", c.Databases, "number of keyspaces (databases)")
 	fs.StringVar(&c.RequirePass, "requirepass", c.RequirePass, "password clients must authenticate with (empty disables it)")
+	fs.IntVar(&c.PprofPort, "pprof", c.PprofPort, "port for the pprof endpoints on 127.0.0.1 (0 disables them)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return Config{}, fmt.Errorf("invalid port %d", c.Port)
+	}
+	if c.PprofPort < 0 || c.PprofPort > 65535 {
+		return Config{}, fmt.Errorf("invalid --pprof port %d", c.PprofPort)
 	}
 	if c.SaveSeconds < 0 || c.SaveChanges < 0 {
 		return Config{}, fmt.Errorf("invalid save policy %d/%d", c.SaveSeconds, c.SaveChanges)

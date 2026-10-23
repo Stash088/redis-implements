@@ -102,7 +102,7 @@ func (s *Store) SetPop(key []byte, count int) ([][]byte, error) {
 	if len(e.Set) == 0 {
 		return nil, nil
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	members := make([]string, 0, len(e.Set))
 	for m := range e.Set {
 		members = append(members, m)

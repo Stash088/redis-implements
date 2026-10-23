@@ -27,6 +27,12 @@ type Ctx struct {
 	Srv    *Server
 	Client *client
 
+	// spec is the resolved command and cmdName its canonical (lower case)
+	// name. The connection loop fills them in once per command so that the
+	// dispatch path does not have to look the command up again.
+	spec    cmdSpec
+	cmdName string
+
 	// wait is set by a blocking command that found nothing to pop: the
 	// connection loop waits for a key to become available and retries.
 	wait *waitRequest
@@ -44,12 +50,19 @@ type Handler func(*Ctx) error
 // keyspaces (the Redis databases). Each client selects its current database
 // with SELECT; commands always run against the client's database.
 type Server struct {
-	dbs     []*store.Store
-	Expirer *store.Expirer
-	AOF     *persist.Appender
-	PubSub  *PubSub
-	Logger  *log.Logger
-	cmds    map[string]cmdSpec
+	dbs       []*store.Store
+	Expirer   *store.Expirer
+	AOF       *persist.Appender
+	PubSub    *PubSub
+	Logger    *log.Logger
+	cmds      map[string]cmdSpec
+	cmdsUpper map[string]cmdSpec // the same commands in upper case: a lookup by
+	// the bytes the client sent must not allocate a string
+
+	// received counts the commands processed. It is written by every
+	// connection, so it is padded to a cache line: otherwise all the
+	// connections would fight for the same line.
+	received commandsCounter
 
 	// Persistence paths (empty disables the related feature).
 	DBPath  string
@@ -57,7 +70,7 @@ type Server struct {
 
 	saveMu   sync.Mutex
 	aofMu    sync.Mutex
-	dirty    atomic.Int64
+	dirty    counter      // writes since the last save
 	lastSave atomic.Int64 // unix seconds of the last successful save
 	saveStop chan struct{}
 
@@ -86,9 +99,36 @@ type Server struct {
 	conns    map[net.Conn]struct{}
 	clients  map[net.Conn]*client
 	started  time.Time
-	received uint64
 	connsNum int64
 }
+
+// cacheLineSize is the size of a cache line on the usual architectures. A
+// counter that is written by every connection is padded to a whole line, so
+// that the connections do not fight for the same one.
+const cacheLineSize = 64
+
+// counter is an atomic counter padded to a cache line.
+type counter struct {
+	v atomic.Int64
+	_ [cacheLineSize - 8]byte
+}
+
+func (c *counter) Add(n int64)        { c.v.Add(n) }
+func (c *counter) Load() int64        { return c.v.Load() }
+func (c *counter) Store(n int64)      { c.v.Store(n) }
+func (c *counter) Swap(n int64) int64 { return c.v.Swap(n) }
+
+// commandsCounter counts the commands processed by the server. Every
+// connection writes to it, so it is padded to a cache line.
+type commandsCounter struct {
+	v atomic.Uint64
+	_ [cacheLineSize - 8]byte
+}
+
+func (c *commandsCounter) Add(n uint64)         { c.v.Add(n) }
+func (c *commandsCounter) Load() uint64         { return c.v.Load() }
+func (c *commandsCounter) Store(n uint64)       { c.v.Store(n) }
+func (c *commandsCounter) Swap(n uint64) uint64 { return c.v.Swap(n) }
 
 // propagate appends args to the AOF when one is enabled.
 func (c *Ctx) propagate(args ...[][]byte) {
@@ -149,14 +189,15 @@ func New(addr string, dbs []*store.Store) (*Server, error) {
 		dbs = []*store.Store{store.New()}
 	}
 	s := &Server{
-		dbs:     dbs,
-		Logger:  log.Default(),
-		cmds:    make(map[string]cmdSpec),
-		conns:   make(map[net.Conn]struct{}),
-		clients: make(map[net.Conn]*client),
-		PubSub:  NewPubSub(),
-		ln:      ln,
-		started: time.Now(),
+		dbs:       dbs,
+		Logger:    log.Default(),
+		cmds:      make(map[string]cmdSpec),
+		cmdsUpper: make(map[string]cmdSpec),
+		conns:     make(map[net.Conn]struct{}),
+		clients:   make(map[net.Conn]*client),
+		PubSub:    NewPubSub(),
+		ln:        ln,
+		started:   time.Now(),
 	}
 	def := "noeviction"
 	s.maxMemoryPolicy.Store(&def)
@@ -301,31 +342,29 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		}
 		c.writeMu.Unlock()
 
-		v, err := r.ReadValue()
+		// The command is read straight into the connection's argument
+		// buffer: the generic value reader would build an intermediate
+		// slice of values for every command.
+		args, err := r.ReadCommand(c.args)
+		c.args = args
 		if err != nil {
-			if err != io.EOF {
-				s.Logger.Printf("server: read error from %s: %v", conn.RemoteAddr(), err)
-			}
-			return
-		}
-		if v.Kind != resp.KindArray || v.IsNull {
-			c.writeMu.Lock()
-			w.WriteError("ERR Protocol error: expected command array")
-			w.Flush()
-			c.writeMu.Unlock()
-			return
-		}
-		args := make([][]byte, 0, len(v.Array))
-		for i := range v.Array {
-			el := v.Array[i]
-			if el.Kind != resp.KindBulkString || el.IsNull {
+			switch {
+			case errors.Is(err, resp.ErrNotArray):
+				c.writeMu.Lock()
+				w.WriteError("ERR Protocol error: expected command array")
+				w.Flush()
+				c.writeMu.Unlock()
+			case errors.Is(err, resp.ErrNotBulk):
 				c.writeMu.Lock()
 				w.WriteError("ERR Protocol error: command arguments must be bulk strings")
 				w.Flush()
 				c.writeMu.Unlock()
-				return
+			default:
+				if err != io.EOF {
+					s.Logger.Printf("server: read error from %s: %v", conn.RemoteAddr(), err)
+				}
 			}
-			args = append(args, el.Str)
+			return
 		}
 		if len(args) == 0 {
 			c.writeMu.Lock()
@@ -335,10 +374,21 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			continue
 		}
 
-		atomic.AddUint64(&s.received, 1)
-		ctx := &Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
-		name := strings.ToLower(string(args[0]))
-		spec, _ := s.cmds[name]
+		s.received.Add(1)
+		ctx := &c.ctx
+		*ctx = Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
+		// The command is resolved once per command: the lookup works on the
+		// bytes the client sent and does not allocate.
+		spec, ok := s.lookupCommand(args[0])
+		if !ok {
+			// Unknown command: the name is only needed for the error
+			// message, so the string is built on this cold path.
+			ctx.cmdName = strings.ToLower(string(args[0]))
+		} else {
+			ctx.cmdName = spec.name
+			ctx.spec = spec
+		}
+		name := ctx.cmdName
 
 		// The Pub/Sub pump goroutine shares the connection's bufio with the
 		// command loop, so command execution and the final Flush must both
@@ -366,15 +416,16 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		var shadowBuf *bytes.Buffer
 		if suppress {
 			shadowBuf = &bytes.Buffer{}
-			shadow = resp.NewWriter(shadowBuf)
+			// A small buffer: the shadow writer holds one discarded reply.
+			shadow = resp.NewWriterSize(shadowBuf, 4096)
 			ctx.W = shadow
 		}
 		started := time.Now()
 		err = s.executeCommand(ctx)
-		s.sl.maybeAdd(args, c.addr, c.name, time.Since(started))
+		s.sl.maybeAdd(args, c, time.Since(started))
 		if spec.write && len(args) > 1 {
 			// A write may have made a key available for a blocked client.
-			s.waiters.signal(string(args[1]))
+			s.waiters.signal(args[1])
 		}
 		if ctx.wait != nil {
 			// A blocking command found nothing to pop: release the write
@@ -449,8 +500,10 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 // dirty counter. It is used both by the connection loop and by EXEC when
 // replaying the transaction queue.
 func (s *Server) executeCommand(ctx *Ctx) error {
-	name := strings.ToLower(string(ctx.Args[0]))
-	spec, _ := s.cmds[name]
+	spec := ctx.spec
+	if spec.handler == nil {
+		spec, _ = s.lookupCommand(ctx.Args[0])
+	}
 
 	// Deny memory-adding commands under noeviction once the store is over
 	// the limit, like Redis.
@@ -478,7 +531,15 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 }
 
 func (s *Server) dispatch(ctx *Ctx) error {
-	name := strings.ToLower(string(ctx.Args[0]))
+	spec := ctx.spec
+	ok := spec.handler != nil
+	if !ok {
+		spec, ok = s.lookupCommand(ctx.Args[0])
+	}
+	name := ctx.cmdName
+	if name == "" {
+		name = strings.ToLower(string(ctx.Args[0]))
+	}
 	// Without authentication only a few commands are allowed.
 	if s.authRequired() && ctx.Client != nil && !ctx.Client.authenticated && !authExempt[name] {
 		return ctx.W.WriteError(noAuthError)
@@ -486,7 +547,6 @@ func (s *Server) dispatch(ctx *Ctx) error {
 	if ctx.Client != nil && ctx.Client.subscribed() && !allowedInSubscribeMode[name] {
 		return ctx.W.WriteError("ERR Can't execute '" + name + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")
 	}
-	spec, ok := s.cmds[name]
 	if !ok {
 		return writeUnknownCommand(ctx)
 	}

@@ -7,6 +7,12 @@ import (
 	"strconv"
 )
 
+// DefaultWriteBufferSize is the size of the socket write buffer. It is bigger
+// than the read buffer on purpose: the replies of a pipelined batch are
+// usually larger than the requests, and one write syscall per batch instead
+// of one per few kilobytes is what makes pipelines pay off.
+const DefaultWriteBufferSize = 64 * 1024
+
 // Writer serializes RESP values to an underlying writer.
 type Writer struct {
 	bw *bufio.Writer
@@ -15,7 +21,7 @@ type Writer struct {
 // NewWriter returns a Writer that writes RESP values to w using a default-sized
 // buffer.
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{bw: bufio.NewWriter(w)}
+	return NewWriterSize(w, DefaultWriteBufferSize)
 }
 
 // NewWriterSize returns a Writer that writes RESP values to w using a buffer of

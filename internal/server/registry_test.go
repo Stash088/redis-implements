@@ -34,7 +34,7 @@ var memoryAddCommandList = []string{
 }
 
 func newTestRegistry() map[string]cmdSpec {
-	srv := &Server{cmds: make(map[string]cmdSpec)}
+	srv := &Server{cmds: make(map[string]cmdSpec), cmdsUpper: make(map[string]cmdSpec)}
 	srv.registerCommands()
 	return srv.cmds
 }
