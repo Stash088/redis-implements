@@ -334,6 +334,18 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		// N commands costs one syscall instead of N.
 		c.writeMu.Lock()
 		if !r.HasBufferedValue() {
+			// The AOF is written out before the replies leave: a client
+			// must not see an answer for a command that is not in the
+			// log yet. The buffer is shared by all the connections, so
+			// this also writes the commands of the other connections
+			// that are waiting for their replies.
+			if s.AOF != nil {
+				if err := s.AOF.Flush(); err != nil {
+					c.writeMu.Unlock()
+					s.Logger.Printf("server: aof flush: %v", err)
+					return
+				}
+			}
 			if err := w.Flush(); err != nil {
 				c.writeMu.Unlock()
 				s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
