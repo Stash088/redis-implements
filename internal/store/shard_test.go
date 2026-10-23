@@ -55,7 +55,7 @@ func TestShardConcurrency(t *testing.T) {
 					s.Rename(src, dst)
 					s.Rename(dst, src)
 				case 8:
-					other := keys((w+1)%writers)[i%singleKeys]
+					other := keys((w + 1) % writers)[i%singleKeys]
 					s.Delete(other, k) // multi-key, possibly two shards
 				case 9:
 					s.Exists(other(mine, i), k)
@@ -91,7 +91,7 @@ func TestShardConcurrency(t *testing.T) {
 				}
 				if i%8 == 0 {
 					// Multi-key read over several shards (MGET path).
-					s.GetStrings(mine[0], mine[1], keys((r+3)%writers)[2])
+					s.GetStrings(mine[0], mine[1], keys((r + 3) % writers)[2])
 				}
 			}
 		}(r)
