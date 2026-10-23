@@ -81,7 +81,7 @@ func cmdGet(ctx *Ctx) error {
 	if !ok {
 		return ctx.W.WriteNullBulk()
 	}
-	return ctx.W.WriteBulkString(v)
+	return ctx.W.WriteBulkLarge(v)
 }
 
 func cmdAppend(ctx *Ctx) error {

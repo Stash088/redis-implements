@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -531,5 +532,62 @@ func TestPipelinedBatch(t *testing.T) {
 		if got := string(v.Str); got != fmt.Sprintf("v%d", i) {
 			t.Errorf("value %d: got %q", i, got)
 		}
+	}
+}
+
+// TestGetLargeBetweenSmallReplies pipelines a GET of a value bigger than the
+// write buffer between two small commands and checks that the replies come
+// back complete and in order: the direct writev path of the large bulk must
+// not reorder or split the stream.
+func TestGetLargeBetweenSmallReplies(t *testing.T) {
+	addr := startTestServer(t)
+	c := newClient(t, addr)
+
+	large := bytes.Repeat([]byte("z"), 128*1024)
+	if v := c.cmd("SET", "big", string(large)); string(v.Str) != "OK" {
+		t.Fatalf("SET big: got %+v", v)
+	}
+
+	// One batch: small, large, small.
+	write := func(args ...string) {
+		t.Helper()
+		elems := make([]resp.Value, len(args))
+		for i, a := range args {
+			elems[i] = resp.NewBulkString([]byte(a))
+		}
+		if err := c.w.WriteValue(resp.NewArray(elems)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	write("SET", "k1", "v1")
+	write("GET", "big")
+	write("SET", "k2", "v2")
+	if err := c.w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	read := func() resp.Value {
+		t.Helper()
+		v, err := c.r.ReadValue()
+		if err != nil {
+			t.Fatalf("read reply: %v", err)
+		}
+		return v
+	}
+	if v := read(); string(v.Str) != "OK" {
+		t.Fatalf("first reply %+v, want OK", v)
+	}
+	v := read()
+	if v.Kind != resp.KindBulkString || !bytes.Equal(v.Str, large) {
+		t.Fatalf("large reply corrupted: got %d bytes, want %d", len(v.Str), len(large))
+	}
+	if v := read(); string(v.Str) != "OK" {
+		t.Fatalf("last reply %+v, want OK", v)
+	}
+	if v := c.cmd("GET", "k1"); string(v.Str) != "v1" {
+		t.Fatalf("GET k1 after the batch: got %q", v.Str)
+	}
+	if v := c.cmd("GET", "k2"); string(v.Str) != "v2" {
+		t.Fatalf("GET k2 after the batch: got %q", v.Str)
 	}
 }
