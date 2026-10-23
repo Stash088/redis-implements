@@ -14,6 +14,11 @@ const (
 	DefaultMaxBulkLen  = 512 * 1024 * 1024 // 512 MB, same as proto-max-bulk-len
 	DefaultMaxLineLen  = 64 * 1024         // 64 KB, same as proto-max-query-buf-len
 	DefaultMaxArrayLen = 1024 * 1024
+
+	// DefaultReadBufferSize is the size of the socket read buffer. Redis
+	// reads into a 16 KB query buffer (PROTO_IOBUF_LEN); a bigger buffer
+	// means fewer read syscalls when a client pipelines commands.
+	DefaultReadBufferSize = 4 * 1024
 )
 
 var (
@@ -33,8 +38,18 @@ type Reader struct {
 
 // NewReader returns a Reader that reads RESP values from r.
 func NewReader(r io.Reader) *Reader {
+	return NewReaderSize(r, DefaultReadBufferSize)
+}
+
+// NewReaderSize returns a Reader that reads RESP values from r using a buffer
+// of the given size. A larger buffer lets a pipelined batch of commands arrive
+// in a single read, which cuts the number of read syscalls.
+func NewReaderSize(r io.Reader, size int) *Reader {
+	if size < 64 {
+		size = 64
+	}
 	return &Reader{
-		br:          bufio.NewReader(r),
+		br:          bufio.NewReaderSize(r, size),
 		maxBulkLen:  DefaultMaxBulkLen,
 		maxLineLen:  DefaultMaxLineLen,
 		maxArrayLen: DefaultMaxArrayLen,

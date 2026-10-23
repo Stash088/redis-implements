@@ -91,7 +91,8 @@ func cmdExec(ctx *Ctx) error {
 	quit := false
 	for _, args := range queue {
 		var buf bytes.Buffer
-		ew := resp.NewWriter(&buf)
+		// A small buffer: one reply is captured at a time.
+		ew := resp.NewWriterSize(&buf, 4096)
 		// The store is resolved per command: a queued SELECT switches the
 		// database for the commands that follow it.
 		ec := &Ctx{Store: ctx.Srv.DB(c.db), Args: args, W: ew, Srv: ctx.Srv, Client: c}

@@ -366,7 +366,8 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		var shadowBuf *bytes.Buffer
 		if suppress {
 			shadowBuf = &bytes.Buffer{}
-			shadow = resp.NewWriter(shadowBuf)
+			// A small buffer: the shadow writer holds one discarded reply.
+			shadow = resp.NewWriterSize(shadowBuf, 4096)
 			ctx.W = shadow
 		}
 		started := time.Now()
