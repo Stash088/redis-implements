@@ -32,6 +32,11 @@ type shard struct {
 	data      map[string]*Entry
 	watches   map[string]map[Watcher]struct{} // WATCH/CAS registry
 	usedBytes int                             // sum of entry costs, guarded by mu
+	// pad grows the shard to a full cache line, so that neighbouring
+	// shards of the array do not share one: the read and write locks are
+	// hot atomics, and two shards bouncing the same line would give back
+	// the contention the sharding removed.
+	pad [16]byte
 }
 
 func (sh *shard) init() {
