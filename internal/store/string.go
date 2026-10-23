@@ -104,7 +104,7 @@ func (s *Store) GetDel(key []byte) ([]byte, bool, error) {
 		return nil, false, ErrWrongType
 	}
 	v := e.Str
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.usedBytes -= e.cost
 	delete(s.data, string(key))
 	return v, true, nil
@@ -123,7 +123,7 @@ func (s *Store) GetEx(key []byte, expiresAt time.Time, clearTTL bool) ([]byte, b
 		return nil, false, ErrWrongType
 	}
 	v := e.Str
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	if clearTTL {
 		e.ExpiresAt = time.Time{}
 	} else {
@@ -203,7 +203,7 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 	} else if e.Type != TypeString {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 
 	end := offset + int64(len(value))
 	// The value is never modified in place: readers may still be copying the

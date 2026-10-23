@@ -185,17 +185,17 @@ func (s *Store) Stats() (keys, expires int) {
 // (removing it in the latter case). Callers must hold s.mu for writing.
 func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 	now := s.clock()
-	k := string(key)
-	e, ok := s.data[k]
+	// The lookup with a []byte key does not copy the bytes.
+	e, ok := s.data[string(key)]
 	if !ok {
 		return nil, false
 	}
 	if e.Expired(now) {
 		// Lazy expiration counts as a modification (like Redis), so WATCH
 		// clients get their transaction aborted.
-		s.touchLocked(k)
+		s.touchKeyLocked(key)
 		s.usedBytes -= e.cost
-		delete(s.data, k)
+		delete(s.data, string(key))
 		return nil, false
 	}
 	e.lastAccess.Store(now.UnixNano())
@@ -211,9 +211,9 @@ func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 // (see the Entry invariant), so a reader may keep using them.
 func readEntry[T any](s *Store, key []byte, fn func(e *Entry) (T, error)) (T, bool, error) {
 	var zero T
-	k := string(key)
+	// The lookup with a []byte key does not copy the bytes.
 	s.mu.RLock()
-	e, ok := s.data[k]
+	e, ok := s.data[string(key)]
 	if !ok {
 		s.mu.RUnlock()
 		return zero, false, nil
@@ -224,7 +224,7 @@ func readEntry[T any](s *Store, key []byte, fn func(e *Entry) (T, error)) (T, bo
 		// The key is gone as far as the caller is concerned; drop it from
 		// the map (and notify its watchers) in a separate write-locked
 		// step, since the read lock cannot be upgraded.
-		s.expireKey(k)
+		s.expireKey(string(key))
 		return zero, false, nil
 	}
 	e.lastAccess.Store(now.UnixNano())
@@ -265,7 +265,7 @@ func copyByteSlices(vals [][]byte) [][]byte {
 // newStringEntry replaces whatever is stored under key with a string entry.
 // Callers must hold s.mu.
 func (s *Store) newStringEntry(key []byte, value []byte, expiresAt time.Time) {
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	k := string(key)
 	if value == nil {
 		if e, ok := s.data[k]; ok {
@@ -379,7 +379,7 @@ func (s *Store) ExpireAt(key []byte, expiresAt time.Time) bool {
 		return false
 	}
 	e.ExpiresAt = expiresAt
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	return true
 }
 
@@ -407,7 +407,7 @@ func (s *Store) Persist(key []byte) bool {
 		return false
 	}
 	e.ExpiresAt = time.Time{}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	return true
 }
 
@@ -449,7 +449,7 @@ func (s *Store) IncrBy(key []byte, delta int64) (int64, error) {
 func (s *Store) Append(key, suffix []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	if e, ok := s.entryLocked(key); ok {
 		if e.Type != TypeString {
 			return 0, ErrWrongType
@@ -504,22 +504,76 @@ func (s *Store) Flush() int {
 	return n
 }
 
+// Active expiration works like Redis: every pass checks a sample of the
+// keyspace instead of scanning all of it. A full scan under the write lock
+// would delay every client of the database for the time of the scan, which
+// shows up as a p99 spike.
+const (
+	// expireSample is the number of keys checked per sample.
+	expireSample = 20
+	// expireCycleBudget is the time one active-expiration pass may spend.
+	expireCycleBudget = time.Millisecond
+)
+
 // ExpireCycle performs one active-expiration pass, removing expired keys.
 // It returns the number of keys removed.
+//
+// The pass samples the keyspace (like Redis does) and works within a time
+// budget: a full scan of the keyspace would block the writers of the
+// database for as long as it takes. Expired keys are also removed lazily
+// when they are accessed.
 func (s *Store) ExpireCycle() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	deadline := time.Now().Add(expireCycleBudget)
+	removed := 0
+	for {
+		expired := s.sampleExpired(deadline)
+		if len(expired) == 0 {
+			return removed
+		}
+		removed += s.removeExpired(expired)
+		if !time.Now().Before(deadline) {
+			return removed
+		}
+	}
+}
+
+// sampleExpired returns up to expireSample expired keys. The keys are picked
+// from a random position of the map (the iteration order of a Go map is
+// randomized), so the sample is spread over the keyspace.
+func (s *Store) sampleExpired(deadline time.Time) []string {
 	now := s.clock()
-	n := 0
+	var expired []string
+	s.mu.RLock()
+	sampled := 0
 	for k, e := range s.data {
+		sampled++
 		if e.Expired(now) {
+			expired = append(expired, k)
+		}
+		if sampled >= expireSample {
+			break
+		}
+	}
+	s.mu.RUnlock()
+	return expired
+}
+
+// removeExpired deletes the given keys, one at a time, so that the write
+// lock is held for as short a time as possible.
+func (s *Store) removeExpired(keys []string) int {
+	removed := 0
+	for _, k := range keys {
+		s.mu.Lock()
+		e, ok := s.data[k]
+		if ok && e.Expired(s.clock()) {
 			s.touchLocked(k)
 			s.usedBytes -= e.cost
 			delete(s.data, k)
-			n++
+			removed++
 		}
+		s.mu.Unlock()
 	}
-	return n
+	return removed
 }
 
 func (s *Store) lenLocked() int {

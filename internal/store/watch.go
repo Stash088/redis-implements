@@ -47,11 +47,30 @@ func (s *Store) IsExpired(key []byte) bool {
 // touchLocked notifies every watcher of key that it changed. Callers must
 // hold s.mu for writing. It is a no-op when nobody watches anything, so the
 // common path pays only a map-length check.
+// touchLocked notifies the watchers of a key that it was modified.
+//
+// Callers must hold s.mu.
 func (s *Store) touchLocked(key string) {
 	if len(s.watches) == 0 {
 		return
 	}
 	if ws, ok := s.watches[key]; ok {
+		for w := range ws {
+			w.MarkDirty()
+		}
+	}
+}
+
+// touchKeyLocked is touchLocked for a key that is still a byte slice: the
+// string is only built when somebody watches the key, so the hot path does
+// not allocate one.
+//
+// Callers must hold s.mu.
+func (s *Store) touchKeyLocked(key []byte) {
+	if len(s.watches) == 0 {
+		return
+	}
+	if ws, ok := s.watches[string(key)]; ok {
 		for w := range ws {
 			w.MarkDirty()
 		}

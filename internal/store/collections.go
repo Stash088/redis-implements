@@ -14,7 +14,7 @@ func (s *Store) ListPush(key []byte, left bool, vals ...[]byte) (int, error) {
 	} else if e.Type != TypeList {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	if left {
 		for i := range vals {
@@ -115,7 +115,7 @@ func (s *Store) ListSet(key []byte, i int, v []byte) (bool, error) {
 		return false, ErrWrongType
 	}
 	old, _ := e.List.Index(i)
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	okSet := e.List.Set(i, v)
 	if okSet {
 		s.addCost(e, len(v)-len(old))
@@ -143,7 +143,7 @@ func (s *Store) HashSetMany(key []byte, fields, values [][]byte) (int, error) {
 	} else if e.Type != TypeHash {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	added := 0
 	for i := range fields {
@@ -210,7 +210,7 @@ func (s *Store) HashDel(key []byte, fields ...[]byte) (int, error) {
 	if e.Type != TypeHash {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	removed := 0
 	for _, f := range fields {
 		if old, exists := e.Hash[string(f)]; exists {
@@ -298,7 +298,7 @@ func (s *Store) SetAdd(key []byte, members ...[]byte) (int, error) {
 	} else if e.Type != TypeSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	added := 0
 	for _, m := range members {
@@ -323,7 +323,7 @@ func (s *Store) SetRem(key []byte, members ...[]byte) (int, error) {
 	if e.Type != TypeSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	removed := 0
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; exists {

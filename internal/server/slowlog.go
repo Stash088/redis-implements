@@ -56,13 +56,18 @@ func (sl *slowlog) config() (int64, int) {
 }
 
 // maybeAdd records the command when it ran longer than the threshold.
-func (sl *slowlog) maybeAdd(args [][]byte, addr, name string, dur time.Duration) {
+//
+// The client is passed instead of its address and name: those are read only
+// for a command that is actually recorded, so the hot path does not take the
+// locks that guard them.
+func (sl *slowlog) maybeAdd(args [][]byte, c *client, dur time.Duration) {
 	if sl == nil || sl.maxLen == 0 || sl.thresh < 0 {
 		return
 	}
 	if int64(dur.Microseconds()) < sl.thresh {
 		return
 	}
+	addr, name := c.addr, c.getName()
 	// The connection reuses its argument buffer, so the entry keeps a copy.
 	kept := make([][]byte, len(args))
 	for i, a := range args {

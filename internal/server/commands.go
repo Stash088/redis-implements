@@ -540,7 +540,7 @@ func cmdInfo(ctx *Ctx) error {
 	fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.maxMemoryPolicyName())
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Stats\r\n")
-	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.received)
+	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.received.Load())
 	fmt.Fprintf(&b, "evicted_keys:%d\r\n", s.evicted.Load())
 	fmt.Fprintf(&b, "pubsub_messages:%d\r\n", s.PubSub.Messages())
 	b.WriteString("\r\n")

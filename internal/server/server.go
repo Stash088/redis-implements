@@ -59,13 +59,18 @@ type Server struct {
 	cmdsUpper map[string]cmdSpec // the same commands in upper case: a lookup by
 	// the bytes the client sent must not allocate a string
 
+	// received counts the commands processed. It is written by every
+	// connection, so it is padded to a cache line: otherwise all the
+	// connections would fight for the same line.
+	received commandsCounter
+
 	// Persistence paths (empty disables the related feature).
 	DBPath  string
 	AOFPath string
 
 	saveMu   sync.Mutex
 	aofMu    sync.Mutex
-	dirty    atomic.Int64
+	dirty    counter      // writes since the last save
 	lastSave atomic.Int64 // unix seconds of the last successful save
 	saveStop chan struct{}
 
@@ -94,9 +99,36 @@ type Server struct {
 	conns    map[net.Conn]struct{}
 	clients  map[net.Conn]*client
 	started  time.Time
-	received uint64
 	connsNum int64
 }
+
+// cacheLineSize is the size of a cache line on the usual architectures. A
+// counter that is written by every connection is padded to a whole line, so
+// that the connections do not fight for the same one.
+const cacheLineSize = 64
+
+// counter is an atomic counter padded to a cache line.
+type counter struct {
+	v atomic.Int64
+	_ [cacheLineSize - 8]byte
+}
+
+func (c *counter) Add(n int64)        { c.v.Add(n) }
+func (c *counter) Load() int64        { return c.v.Load() }
+func (c *counter) Store(n int64)      { c.v.Store(n) }
+func (c *counter) Swap(n int64) int64 { return c.v.Swap(n) }
+
+// commandsCounter counts the commands processed by the server. Every
+// connection writes to it, so it is padded to a cache line.
+type commandsCounter struct {
+	v atomic.Uint64
+	_ [cacheLineSize - 8]byte
+}
+
+func (c *commandsCounter) Add(n uint64)         { c.v.Add(n) }
+func (c *commandsCounter) Load() uint64         { return c.v.Load() }
+func (c *commandsCounter) Store(n uint64)       { c.v.Store(n) }
+func (c *commandsCounter) Swap(n uint64) uint64 { return c.v.Swap(n) }
 
 // propagate appends args to the AOF when one is enabled.
 func (c *Ctx) propagate(args ...[][]byte) {
@@ -342,7 +374,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			continue
 		}
 
-		atomic.AddUint64(&s.received, 1)
+		s.received.Add(1)
 		ctx := &c.ctx
 		*ctx = Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
 		// The command is resolved once per command: the lookup works on the
@@ -390,10 +422,10 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		}
 		started := time.Now()
 		err = s.executeCommand(ctx)
-		s.sl.maybeAdd(args, c.addr, c.name, time.Since(started))
+		s.sl.maybeAdd(args, c, time.Since(started))
 		if spec.write && len(args) > 1 {
 			// A write may have made a key available for a blocked client.
-			s.waiters.signal(string(args[1]))
+			s.waiters.signal(args[1])
 		}
 		if ctx.wait != nil {
 			// A blocking command found nothing to pop: release the write
