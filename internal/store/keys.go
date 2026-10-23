@@ -112,20 +112,10 @@ func copyEntry(e *Entry) *Entry {
 		}
 		out.ZSet = z
 	case TypeStream:
-		st := &Stream{
-			lastID:       e.Stream.lastID,
-			maxDeletedID: e.Stream.maxDeletedID,
-			entriesAdded: e.Stream.entriesAdded,
-			entries:      make([]StreamEntry, len(e.Stream.entries)),
-		}
-		for i, entry := range e.Stream.entries {
-			fields := make([][]byte, len(entry.Fields))
-			for j, f := range entry.Fields {
-				fields[j] = append([]byte(nil), f...)
-			}
-			st.entries[i] = StreamEntry{ID: entry.ID, Fields: fields}
-		}
-		out.Stream = st
+		// The snapshot carries the groups and the consumers too: without
+		// them COPY, MOVE and DUMP would lose them.
+		snap := e.Stream.Snapshot()
+		out.Stream = NewStream(snap)
 	}
 	return out
 }
