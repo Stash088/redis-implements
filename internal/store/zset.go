@@ -239,3 +239,14 @@ func (s *Store) ZRank(key, member []byte, reverse bool) (int64, bool, error) {
 	}
 	return rank, ok, nil
 }
+
+// Clone returns a copy of the sorted set: the members are shared (they are
+// never modified in place), but the structure of the set is copied, so the
+// copy can be read without the lock of the store.
+func (z *ZSet) Clone() *ZSet {
+	out := newZSet()
+	for member, score := range z.dict {
+		out.Add(score, []byte(member))
+	}
+	return out
+}

@@ -232,3 +232,14 @@ func (l *List) Range(start, stop int) [][]byte {
 	}
 	return out
 }
+
+// Clone returns a copy of the list: the elements are shared (they are never
+// modified in place), but the structure of the list is copied, so the copy
+// can be read without the lock of the store.
+func (l *List) Clone() *List {
+	out := newList()
+	for n := l.head; n != nil; n = n.next {
+		out.PushBack(n.val)
+	}
+	return out
+}
