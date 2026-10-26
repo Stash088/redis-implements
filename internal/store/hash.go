@@ -74,7 +74,7 @@ func (s *Store) hashEntryForWriteLocked(key []byte) (*Entry, error) {
 	if e.Type != TypeHash {
 		return nil, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	return e, nil
 }
@@ -231,7 +231,7 @@ func (s *Store) HashGetDel(key []byte, fields ...[]byte) ([][]byte, error) {
 	if e.Type != TypeHash {
 		return nil, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	for i, f := range fields {
 		name := string(f)
 		old, exists := e.Hash[name]

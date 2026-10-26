@@ -135,7 +135,7 @@ func copyEntry(e *Entry) *Entry {
 func (s *Store) StoreEntry(key []byte, e *Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	cost := s.entryCostLocked(string(key), e)
 	if old, ok := s.data[string(key)]; ok {
 		s.usedBytes -= old.cost

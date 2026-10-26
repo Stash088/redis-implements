@@ -295,7 +295,7 @@ func (s *Store) StreamGroupCreate(key []byte, group string, id StreamID, entries
 	} else if e.Type != TypeStream {
 		return false, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -331,7 +331,7 @@ func (s *Store) StreamGroupDestroy(key []byte, group string) (bool, error) {
 	if e.Type != TypeStream {
 		return false, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -354,7 +354,7 @@ func (s *Store) StreamGroupSetID(key []byte, group string, id StreamID, entriesR
 	if e.Type != TypeStream {
 		return ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -384,7 +384,7 @@ func (s *Store) StreamGroupCreateConsumer(key []byte, group, consumer string) (b
 	if e.Type != TypeStream {
 		return false, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -414,7 +414,7 @@ func (s *Store) StreamGroupDelConsumer(key []byte, group, consumer string) (int,
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -449,7 +449,7 @@ func (s *Store) StreamGroupRead(key []byte, group, consumer string, mode StreamR
 	if e.Type != TypeStream {
 		return StreamDelivery{}, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -570,7 +570,7 @@ func (s *Store) StreamAck(key []byte, group string, ids []StreamID) (int, error)
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -598,7 +598,7 @@ func (s *Store) StreamClaim(key []byte, group, consumer string, minIdle time.Dur
 	if e.Type != TypeStream {
 		return StreamClaimResult{}, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -700,7 +700,7 @@ func (s *Store) StreamAutoClaim(key []byte, group, consumer string, minIdle time
 	if e.Type != TypeStream {
 		return StreamAutoClaimResult{}, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 
 	st := e.Stream

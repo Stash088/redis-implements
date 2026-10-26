@@ -102,7 +102,9 @@ func (a *Appender) fsyncLoop() {
 // EncodeCommand serializes a command as a RESP array of bulk strings.
 func EncodeCommand(args [][]byte) []byte {
 	var buf bytes.Buffer
-	w := resp.NewWriter(&buf)
+	// A small buffer: one command is encoded at a time, the socket-sized
+	// default would only waste memory.
+	w := resp.NewWriterSize(&buf, 4096)
 	w.WriteArrayHeader(len(args))
 	for _, a := range args {
 		w.WriteBulkString(a)

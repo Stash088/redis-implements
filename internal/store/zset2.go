@@ -104,7 +104,7 @@ func (s *Store) ZIncrBy(key []byte, delta float64, member []byte) (float64, erro
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	s.markAccess(e)
 	old, exists := e.ZSet.Score(member)
 	if !exists {

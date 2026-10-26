@@ -2,6 +2,7 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +52,10 @@ type waiters struct {
 	mu sync.Mutex
 	// byKey maps a key to the waiters interested in it.
 	byKey map[string][]*waiter
+	// n is the number of registered waiters. Every write command checks it,
+	// so it has to be readable without the lock: when nobody waits, the
+	// write path must not touch the mutex at all.
+	n atomic.Int64
 }
 
 func newWaiters() *waiters {
@@ -60,17 +65,17 @@ func newWaiters() *waiters {
 // add registers a waiter for all its keys.
 func (w *waiters) add(wt *waiter) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for _, k := range wt.keys {
 		key := string(k)
 		w.byKey[key] = append(w.byKey[key], wt)
 	}
+	w.mu.Unlock()
+	w.n.Add(1)
 }
 
 // remove unregisters a waiter from all its keys.
 func (w *waiters) remove(wt *waiter) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for _, k := range wt.keys {
 		key := string(k)
 		list := w.byKey[key]
@@ -84,19 +89,26 @@ func (w *waiters) remove(wt *waiter) {
 			delete(w.byKey, key)
 		}
 	}
+	w.mu.Unlock()
+	w.n.Add(-1)
 }
 
 // signal wakes the waiters of a key: a command may have made it available.
-func (w *waiters) signal(key string) {
+// The key is given as bytes: the string is only built when there is
+// somebody to wake up.
+func (w *waiters) signal(key []byte) {
+	if w.n.Load() == 0 {
+		return
+	}
 	w.mu.Lock()
-	list := w.byKey[key]
+	list := w.byKey[string(key)]
 	if len(list) == 0 {
 		w.mu.Unlock()
 		return
 	}
 	// The waiters are removed from the registry: the woken client retries the
 	// command and registers again if it still has to wait.
-	delete(w.byKey, key)
+	delete(w.byKey, string(key))
 	for _, other := range list {
 		for _, k := range other.keys {
 			k2 := string(k)

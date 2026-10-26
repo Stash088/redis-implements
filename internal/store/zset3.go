@@ -250,7 +250,7 @@ func (s *Store) ZRemRangeByRank(key []byte, start, stop int) (int, error) {
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	n := e.ZSet.Len()
 	if start < 0 {
 		start += n
@@ -296,7 +296,7 @@ func (s *Store) ZRemRangeByScore(key []byte, min, max float64, minExcl, maxExcl 
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	entries := e.ZSet.RangeByScore(min, max, minExcl, maxExcl, 0, 0)
 	for _, entry := range entries {
 		e.ZSet.Remove(entry.Member)
@@ -321,7 +321,7 @@ func (s *Store) ZRemRangeByLex(key []byte, min, max []byte, minExcl, maxExcl boo
 	if e.Type != TypeZSet {
 		return 0, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	entries := e.ZSet.RangeByLex(min, max, minExcl, maxExcl, 0, 0)
 	for _, entry := range entries {
 		e.ZSet.Remove(entry.Member)
@@ -346,7 +346,7 @@ func (s *Store) ZPop(key []byte, count int, lowest bool) ([]ZEntry, error) {
 	if e.Type != TypeZSet {
 		return nil, ErrWrongType
 	}
-	s.touchLocked(string(key))
+	s.touchKeyLocked(key)
 	n := e.ZSet.Len()
 	if n == 0 {
 		return nil, nil
