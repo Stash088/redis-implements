@@ -1,6 +1,9 @@
 package store
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // The store is sharded: every shard is an independently locked slice of the
 // keyspace. Commands that touch one key take the lock of its shard only, so
@@ -33,10 +36,15 @@ const ShardCount = shardCount
 
 // shard is one independently locked slice of the keyspace.
 type shard struct {
-	mu        sync.RWMutex
-	data      map[string]*Entry
-	watches   map[string]map[Watcher]struct{} // WATCH/CAS registry
-	usedBytes int                             // sum of entry costs, guarded by mu
+	mu   sync.RWMutex
+	data map[string]*Entry
+	// watches is the WATCH/CAS registry of the shard.
+	watches map[string]map[Watcher]struct{}
+	// usedBytes is the sum of the costs of the entries of the shard. It is
+	// updated under mu, but read without it: the memory accounting of the
+	// server must not take the locks of the shards on the path of every
+	// write command.
+	usedBytes atomic.Int64
 	// pad grows the shard to a full cache line, so that neighbouring
 	// shards of the array do not share one: the read and write locks are
 	// hot atomics, and two shards bouncing the same line would give back

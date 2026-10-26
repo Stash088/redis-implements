@@ -23,6 +23,7 @@ var aofWriteCommandList = []string{
 	"zunionstore",
 	"xadd", "xdel", "xsetid", "xtrim",
 	"xack", "xautoclaim", "xclaim", "xgroup", "xreadgroup",
+	"getdel", "getset", "mset", "msetnx", "psetex", "setex", "setnx", "setrange",
 }
 
 // memoryAddCommandList is the set of commands that can grow the dataset; they
@@ -31,6 +32,7 @@ var memoryAddCommandList = []string{
 	"append", "decr", "decrby", "hincrby", "hincrbyfloat", "hmset", "hset",
 	"hsetnx", "incr", "incrby", "incrbyfloat", "lpush", "lpushx", "lset",
 	"rpush", "rpushx", "sadd", "set", "zadd", "zincrby", "xadd",
+	"getset", "mset", "msetnx", "psetex", "setex", "setnx", "setrange",
 }
 
 func newTestRegistry() map[string]cmdSpec {
@@ -85,11 +87,16 @@ func TestCommandRegistryMemoryAddSet(t *testing.T) {
 }
 
 // TestCommandRegistryAofSelf checks that the commands propagating themselves
-// to the AOF are exactly those whose AOF rewrite depends on whether the
-// command took effect.
+// to the AOF are exactly those whose handler writes the command to the
+// journal: a command written by both the handler and the dispatcher would be
+// applied twice on the replay.
 func TestCommandRegistryAofSelf(t *testing.T) {
 	cmds := newTestRegistry()
-	want := map[string]bool{"set": true, "expire": true, "pexpire": true, "xadd": true, "xreadgroup": true}
+	want := map[string]bool{
+		"set": true, "expire": true, "pexpire": true, "xadd": true, "xreadgroup": true,
+		"getdel": true, "getset": true, "mset": true, "msetnx": true,
+		"psetex": true, "setex": true, "setnx": true, "setrange": true,
+	}
 	for name, spec := range cmds {
 		if spec.aofSelf != want[name] {
 			t.Errorf("command %q: aofSelf=%v, want %v", name, spec.aofSelf, want[name])

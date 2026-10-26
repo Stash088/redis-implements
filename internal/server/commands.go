@@ -165,17 +165,17 @@ func (s *Server) registerCommands() {
 	s.regW("HGETDEL", -5, cmdHGetDel)
 
 	// String commands (second batch).
-	s.reg("MSET", -3, cmdMSet)
-	s.reg("MSETNX", -3, cmdMSetNX)
+	s.regWSG("MSET", -3, cmdMSet)
+	s.regWSG("MSETNX", -3, cmdMSetNX)
 	s.reg("MGET", -2, cmdMGet)
-	s.reg("GETSET", 3, cmdGetSet)
-	s.reg("GETDEL", 2, cmdGetDel)
+	s.regWSG("GETSET", 3, cmdGetSet)
+	s.regWS("GETDEL", 2, cmdGetDel)
 	s.reg("GETEX", -2, cmdGetEx)
-	s.reg("SETEX", 4, cmdSetEx)
-	s.reg("PSETEX", 4, cmdPSetEx)
-	s.reg("SETNX", 3, cmdSetNX)
+	s.regWSG("SETEX", 4, cmdSetEx)
+	s.regWSG("PSETEX", 4, cmdPSetEx)
+	s.regWSG("SETNX", 3, cmdSetNX)
 	s.reg("GETRANGE", 4, cmdGetRange)
-	s.reg("SETRANGE", 4, cmdSetRange)
+	s.regWSG("SETRANGE", 4, cmdSetRange)
 	s.regWG("INCRBYFLOAT", 3, cmdIncrByFloat)
 
 	// Blocking commands.
@@ -246,7 +246,11 @@ func (s *Server) registerCommands() {
 // command name itself), a negative n means at least |n| arguments. It backs
 // the queue-time validation of commands inside MULTI, like Redis does.
 type cmdSpec struct {
-	name    string // canonical (lower case) name of the command
+	name string // canonical (lower case) name of the command
+	// namePtr points to the same name: the connection loop keeps the
+	// pointer to show the last command of a client (CLIENT LIST) without
+	// allocating on the path of every command.
+	namePtr *string
 	handler Handler
 	arity   int
 	write   bool // mutates the dataset: the command is propagated to the AOF
@@ -279,32 +283,48 @@ func (s *Server) lookupCommand(cmd []byte) (cmdSpec, bool) {
 	return cmdSpec{}, false
 }
 
+// registerCmd registers a command under its lower case name.
+func (s *Server) registerCmd(name string, arity int, h Handler, write, aofSelf, memAdd bool) {
+	lower := strings.ToLower(name)
+	// The pointer to the name stays valid for the whole life of the
+	// server: the registry keeps it.
+	s.register(cmdSpec{
+		name:    lower,
+		namePtr: &lower,
+		handler: h,
+		arity:   arity,
+		write:   write,
+		aofSelf: aofSelf,
+		memAdd:  memAdd,
+	})
+}
+
 // reg registers a read-only command.
 func (s *Server) reg(name string, arity int, h Handler) {
-	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity})
+	s.registerCmd(name, arity, h, false, false, false)
 }
 
 // regW registers a command that mutates the dataset: it is propagated to the
 // AOF after execution.
 func (s *Server) regW(name string, arity int, h Handler) {
-	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true})
+	s.registerCmd(name, arity, h, true, false, false)
 }
 
 // regWG registers a command that mutates the dataset and can grow it.
 func (s *Server) regWG(name string, arity int, h Handler) {
-	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true, memAdd: true})
+	s.registerCmd(name, arity, h, true, false, true)
 }
 
 // regWS registers a command that mutates the dataset and propagates itself
 // to the AOF.
 func (s *Server) regWS(name string, arity int, h Handler) {
-	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true, aofSelf: true})
+	s.registerCmd(name, arity, h, true, true, false)
 }
 
 // regWSG registers a command that mutates the dataset, can grow it and
 // propagates itself to the AOF.
 func (s *Server) regWSG(name string, arity int, h Handler) {
-	s.register(cmdSpec{name: strings.ToLower(name), handler: h, arity: arity, write: true, aofSelf: true, memAdd: true})
+	s.registerCmd(name, arity, h, true, true, true)
 }
 
 func wrongArgs(w *resp.Writer, cmd string) {
@@ -540,7 +560,7 @@ func cmdInfo(ctx *Ctx) error {
 	fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.maxMemoryPolicyName())
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Stats\r\n")
-	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.received.Load())
+	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.receivedTotal())
 	fmt.Fprintf(&b, "evicted_keys:%d\r\n", s.evicted.Load())
 	fmt.Fprintf(&b, "pubsub_messages:%d\r\n", s.PubSub.Messages())
 	b.WriteString("\r\n")

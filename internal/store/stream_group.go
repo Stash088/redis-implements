@@ -291,7 +291,7 @@ func (s *Store) StreamGroupCreate(key []byte, group string, id StreamID, entries
 			return false, ErrStreamNotFound
 		}
 		e = &Entry{Type: TypeStream, Stream: &Stream{}, cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeStream {
 		return false, ErrWrongType

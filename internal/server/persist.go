@@ -26,13 +26,13 @@ func (s *Server) StartSavePolicy(seconds, changes int) {
 				return
 			case <-t.C:
 				if time.Since(time.Unix(s.lastSave.Load(), 0)) >= time.Duration(seconds)*time.Second &&
-					s.dirty.Load() >= int64(changes) {
+					s.dirtyTotal() >= int64(changes) {
 					saveMu := &s.saveMu
 					saveMu.Lock()
 					err := s.saveRDB()
 					saveMu.Unlock()
 					if err == nil {
-						s.dirty.Store(0)
+						s.resetDirty()
 						s.lastSave.Store(time.Now().Unix())
 					}
 				}
@@ -52,14 +52,14 @@ func (s *Server) saveRDB() error {
 // server: save policy, expirer, AOF and the listener. It is used for graceful
 // container shutdown; closing the listener makes Serve return.
 func (s *Server) Shutdown() error {
-	if s.DBPath != "" && s.dirty.Load() > 0 {
+	if s.DBPath != "" && s.dirtyTotal() > 0 {
 		s.saveMu.Lock()
 		err := s.saveRDB()
 		s.saveMu.Unlock()
 		if err != nil {
 			s.Logger.Printf("server: shutdown save: %v", err)
 		} else {
-			s.dirty.Store(0)
+			s.resetDirty()
 			s.lastSave.Store(time.Now().Unix())
 		}
 	}
@@ -75,7 +75,7 @@ func cmdSave(ctx *Ctx) error {
 	if err := ctx.Srv.saveRDB(); err != nil {
 		return ctx.W.WriteError("ERR " + err.Error())
 	}
-	ctx.Srv.dirty.Store(0)
+	ctx.Srv.resetDirty()
 	ctx.Srv.lastSave.Store(time.Now().Unix())
 	return ctx.W.WriteSimpleString("OK")
 }
@@ -93,7 +93,7 @@ func cmdBGSAVE(ctx *Ctx) error {
 			ctx.Srv.Logger.Printf("server: bgsave: %v", err)
 			return
 		}
-		ctx.Srv.dirty.Store(0)
+		ctx.Srv.resetDirty()
 		ctx.Srv.lastSave.Store(time.Now().Unix())
 	}()
 	return ctx.W.WriteSimpleString("Background saving started")

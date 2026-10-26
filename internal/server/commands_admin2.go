@@ -226,6 +226,6 @@ func clientInfoValue(c *client, now time.Time) resp.Value {
 		"psub=" + strconv.Itoa(psub),
 		"multi=" + strconv.Itoa(inMulti),
 		"watch=" + strconv.Itoa(watchCount),
-		"cmd=" + c.lastCmd,
+		"cmd=" + c.lastCmdName(),
 	}, " ")))
 }

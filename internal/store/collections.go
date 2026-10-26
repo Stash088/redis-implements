@@ -10,7 +10,7 @@ func (s *Store) ListPush(key []byte, left bool, vals ...[]byte) (int, error) {
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeList, List: newList(), cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeList {
 		return 0, ErrWrongType
@@ -56,7 +56,7 @@ func (s *Store) ListPop(key []byte, left bool) ([]byte, bool, error) {
 	}
 	s.addCost(sh, e, -(len(v) + elemOverhead))
 	if e.List.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return v, true, nil
@@ -142,7 +142,7 @@ func (s *Store) HashSetMany(key []byte, fields, values [][]byte) (int, error) {
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeHash, Hash: make(map[string][]byte), cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeHash {
 		return 0, ErrWrongType
@@ -224,7 +224,7 @@ func (s *Store) HashDel(key []byte, fields ...[]byte) (int, error) {
 		}
 	}
 	if len(e.Hash) == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return removed, nil
@@ -298,7 +298,7 @@ func (s *Store) SetAdd(key []byte, members ...[]byte) (int, error) {
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeSet, Set: make(map[string]struct{}), cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeSet {
 		return 0, ErrWrongType
@@ -345,7 +345,7 @@ func (s *Store) SetRem(key []byte, members ...[]byte) (int, error) {
 		}
 	}
 	if len(e.Set) == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return removed, nil

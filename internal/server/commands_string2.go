@@ -136,7 +136,10 @@ func cmdGetEx(ctx *Ctx) error {
 	if !ok {
 		return ctx.W.WriteNullBulk()
 	}
-	if clearTTL {
+	// Without an expiry option the TTL is removed, and the journal must say
+	// so: a PEXPIREAT with an empty instant would expire the key at once
+	// on the replay.
+	if clearTTL || expiresAt.IsZero() {
 		ctx.propagate([][]byte{[]byte("persist"), ctx.Args[1]})
 	} else {
 		ctx.propagate([][]byte{[]byte("pexpireat"), ctx.Args[1],

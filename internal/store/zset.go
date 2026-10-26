@@ -138,7 +138,7 @@ func (s *Store) ZAdd(key []byte, score float64, member []byte) (int, error) {
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeZSet, ZSet: newZSet(), cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
@@ -198,7 +198,7 @@ func (s *Store) ZRem(key []byte, members ...[]byte) (int, error) {
 		}
 	}
 	if e.ZSet.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return removed, nil

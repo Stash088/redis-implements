@@ -32,11 +32,11 @@ func (s *Store) RestoreEntry(key string, e *Entry) {
 	defer sh.mu.Unlock()
 	cost := s.entryCostLocked(key, e)
 	if old, ok := sh.data[key]; ok {
-		sh.usedBytes -= old.cost
+		s.addBytes(sh, -int64(old.cost))
 	}
 	e.cost = cost
 	e.lastAccess.Store(s.clock().UnixNano())
-	sh.usedBytes += cost
+	s.addBytes(sh, int64(cost))
 	sh.data[key] = e
 }
 

@@ -21,12 +21,12 @@ func (s *Store) Rename(key, newKey []byte) (bool, error) {
 		s.touchLocked(dstSh, dst)
 		// The destination is replaced.
 		if prev, exists := dstSh.data[dst]; exists {
-			dstSh.usedBytes -= prev.cost
+			s.addBytes(dstSh, -int64(prev.cost))
 		}
 		dstSh.data[dst] = e
 		delete(srcSh.data, old)
-		srcSh.usedBytes -= e.cost
-		dstSh.usedBytes += e.cost
+		s.addBytes(srcSh, -int64(e.cost))
+		s.addBytes(dstSh, int64(e.cost))
 	}
 	return true, nil
 }
@@ -54,12 +54,12 @@ func (s *Store) RenameNX(key, newKey []byte) (bool, error) {
 	s.touchLocked(srcSh, old)
 	s.touchLocked(dstSh, dst)
 	if prev, exists := dstSh.data[dst]; exists {
-		dstSh.usedBytes -= prev.cost
+		s.addBytes(dstSh, -int64(prev.cost))
 	}
 	dstSh.data[dst] = e
 	delete(srcSh.data, old)
-	srcSh.usedBytes -= e.cost
-	dstSh.usedBytes += e.cost
+	s.addBytes(srcSh, -int64(e.cost))
+	s.addBytes(dstSh, int64(e.cost))
 	return true, nil
 }
 
@@ -140,11 +140,11 @@ func (s *Store) StoreEntry(key []byte, e *Entry) {
 	s.touchKeyLocked(sh, key)
 	cost := s.entryCostLocked(string(key), e)
 	if old, ok := sh.data[string(key)]; ok {
-		sh.usedBytes -= old.cost
+		s.addBytes(sh, -int64(old.cost))
 	}
 	e.cost = cost
 	e.lastAccess.Store(s.clock().UnixNano())
-	sh.usedBytes += cost
+	s.addBytes(sh, int64(cost))
 	sh.data[string(key)] = e
 }
 
@@ -272,7 +272,7 @@ func (s *Store) SetList(key []byte, elems [][]byte) (int, error) {
 		if !e.Expired(now) && e.Type != TypeList {
 			return 0, ErrWrongType
 		}
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	l := NewList()
@@ -283,7 +283,7 @@ func (s *Store) SetList(key []byte, elems [][]byte) (int, error) {
 	}
 	e := &Entry{Type: TypeList, List: l, cost: cost}
 	e.lastAccess.Store(now.UnixNano())
-	sh.usedBytes += cost
+	s.addBytes(sh, int64(cost))
 	sh.data[string(key)] = e
 	return len(elems), nil
 }

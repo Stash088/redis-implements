@@ -408,7 +408,7 @@ func writeClientList(ctx *Ctx) error {
 		sub, psub := s.PubSub.clientSubs(c)
 		fmt.Fprintf(&b, "id=%d addr=%s name=%s age=%d db=%d sub=%d psub=%d multi=%d watch=%d cmd=%s",
 			c.id, c.addr, c.getName(), int64(now.Sub(c.created).Seconds()), c.db,
-			sub, psub, inMulti, watchCount, c.lastCmd)
+			sub, psub, inMulti, watchCount, c.lastCmdName())
 		if i < len(clients)-1 {
 			b.WriteString("\n")
 		}

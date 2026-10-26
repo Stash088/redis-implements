@@ -18,11 +18,15 @@ type slowlogEntry struct {
 
 // slowlog is a bounded ring of slow command entries. threshold is in
 // microseconds; negative disables recording, zero length disables retention.
+//
+// The configuration is read on the path of every command, so it lives in
+// atomics: the slow log is reconfigured while the server runs, and the
+// command loop must not wait for the lock of the ring.
 type slowlog struct {
 	mu      sync.Mutex
 	entries []slowlogEntry // newest last
-	maxLen  int
-	thresh  int64
+	maxLen  atomic.Int64
+	thresh  atomic.Int64
 	nextID  atomic.Uint64
 }
 
@@ -30,7 +34,10 @@ func newSlowlog(threshold int64, maxLen int) *slowlog {
 	if maxLen < 0 {
 		maxLen = 0
 	}
-	return &slowlog{maxLen: maxLen, thresh: threshold}
+	sl := &slowlog{}
+	sl.maxLen.Store(int64(maxLen))
+	sl.thresh.Store(threshold)
+	return sl
 }
 
 // setConfig updates the threshold and capacity, truncating entries to the new
@@ -41,8 +48,8 @@ func (sl *slowlog) setConfig(threshold int64, maxLen int) {
 	}
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
-	sl.thresh = threshold
-	sl.maxLen = maxLen
+	sl.thresh.Store(threshold)
+	sl.maxLen.Store(int64(maxLen))
 	if len(sl.entries) > maxLen {
 		sl.entries = sl.entries[len(sl.entries)-maxLen:]
 	}
@@ -50,9 +57,7 @@ func (sl *slowlog) setConfig(threshold int64, maxLen int) {
 
 // config returns the current threshold and capacity.
 func (sl *slowlog) config() (int64, int) {
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
-	return sl.thresh, sl.maxLen
+	return sl.thresh.Load(), int(sl.maxLen.Load())
 }
 
 // maybeAdd records the command when it ran longer than the threshold.
@@ -61,10 +66,15 @@ func (sl *slowlog) config() (int64, int) {
 // for a command that is actually recorded, so the hot path does not take the
 // locks that guard them.
 func (sl *slowlog) maybeAdd(args [][]byte, c *client, dur time.Duration) {
-	if sl == nil || sl.maxLen == 0 || sl.thresh < 0 {
+	if sl == nil {
 		return
 	}
-	if int64(dur.Microseconds()) < sl.thresh {
+	maxLen := sl.maxLen.Load()
+	thresh := sl.thresh.Load()
+	if maxLen == 0 || thresh < 0 {
+		return
+	}
+	if int64(dur.Microseconds()) < thresh {
 		return
 	}
 	addr, name := c.addr, c.getName()
@@ -83,7 +93,7 @@ func (sl *slowlog) maybeAdd(args [][]byte, c *client, dur time.Duration) {
 	}
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
-	if len(sl.entries) >= sl.maxLen {
+	if int64(len(sl.entries)) >= sl.maxLen.Load() {
 		copy(sl.entries, sl.entries[1:])
 		sl.entries[len(sl.entries)-1] = e
 	} else {
