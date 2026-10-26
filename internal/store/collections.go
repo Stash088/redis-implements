@@ -152,14 +152,10 @@ func (s *Store) HashSetMany(key []byte, fields, values [][]byte) (int, error) {
 	added := 0
 	for i := range fields {
 		f := string(fields[i])
-		if old, exists := e.Hash[f]; exists {
-			e.Hash[f] = values[i]
-			s.addCost(sh, e, len(values[i])-len(old))
-			continue
+		if _, exists := e.Hash[f]; !exists {
+			added++
 		}
-		e.Hash[f] = values[i]
-		s.addCost(sh, e, len(f)+len(values[i]))
-		added++
+		s.setHashFieldLocked(sh, e, f, values[i])
 	}
 	return added, nil
 }
@@ -220,6 +216,9 @@ func (s *Store) HashDel(key []byte, fields ...[]byte) (int, error) {
 	for _, f := range fields {
 		if old, exists := e.Hash[string(f)]; exists {
 			delete(e.Hash, string(f))
+			// The field is gone: the snapshot of the scan commands does
+			// not hold it any more.
+			e.bumpVersion()
 			s.addCost(sh, e, -(len(string(f)) + len(old)))
 			removed++
 		}
@@ -310,6 +309,9 @@ func (s *Store) SetAdd(key []byte, members ...[]byte) (int, error) {
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; !exists {
 			e.Set[string(m)] = struct{}{}
+			// A new member changes the set of the members: the snapshot
+			// of the scan commands does not hold it any more.
+			e.bumpVersion()
 			s.addCost(sh, e, len(m)+elemOverhead)
 			added++
 		}
@@ -335,6 +337,9 @@ func (s *Store) SetRem(key []byte, members ...[]byte) (int, error) {
 	for _, m := range members {
 		if _, exists := e.Set[string(m)]; exists {
 			delete(e.Set, string(m))
+			// The member is gone: the snapshot of the scan commands does
+			// not hold it any more.
+			e.bumpVersion()
 			s.addCost(sh, e, -(len(m) + elemOverhead))
 			removed++
 		}

@@ -75,6 +75,15 @@ type Entry struct {
 	ExpiresAt  time.Time           // zero value means no expiry
 	cost       int                 // approximate memory footprint, incl. key
 	lastAccess atomic.Int64        // nanos, updated on access (allkeys-lru)
+
+	// version counts the changes of the collection the entry holds: it says
+	// whether the snapshot of the scan commands is still valid. It is
+	// protected by the lock of the shard that owns the entry.
+	version uint64
+	// scanCache is the snapshot of the collection that the scan commands
+	// (HSCAN, SSCAN, ZSCAN) walk. It is published atomically, so a reader
+	// can build it without blocking the other readers of the shard.
+	scanCache atomic.Pointer[scanSnapshot]
 }
 
 // Invariant: the byte buffers reachable from an entry are never modified in
@@ -86,6 +95,12 @@ type Entry struct {
 func (e *Entry) Expired(now time.Time) bool {
 	return !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt)
 }
+
+// bumpVersion marks the collection of the entry as changed: the snapshot the
+// scan commands walk becomes stale and is built again on the next call.
+//
+// Callers must hold the write lock of the shard that owns the entry.
+func (e *Entry) bumpVersion() { e.version++ }
 
 // Store is a thread-safe in-memory key/value store. The keyspace is split
 // into independently locked shards (see shard.go): a command takes the lock of

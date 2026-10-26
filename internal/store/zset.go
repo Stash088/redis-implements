@@ -11,6 +11,10 @@ type ZEntry struct {
 type ZSet struct {
 	dict map[string]float64
 	sl   *skiplist
+	// version counts the changes of the set: it says whether the snapshot
+	// of the scan commands (ZSCAN) is still valid. Every change goes
+	// through Add and Remove, so the counter cannot miss one.
+	version uint64
 }
 
 func newZSet() *ZSet {
@@ -24,12 +28,14 @@ func (z *ZSet) Add(score float64, member []byte) bool {
 		if old != score {
 			z.sl.Delete(old, member)
 			z.sl.Insert(score, member)
+			z.version++
 		}
 		z.dict[string(member)] = score
 		return false
 	}
 	z.sl.Insert(score, member)
 	z.dict[string(member)] = score
+	z.version++
 	return true
 }
 
@@ -41,6 +47,7 @@ func (z *ZSet) Remove(member []byte) bool {
 	}
 	z.sl.Delete(score, member)
 	delete(z.dict, string(member))
+	z.version++
 	return true
 }
 

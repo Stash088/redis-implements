@@ -66,23 +66,23 @@ func parseScanOptions(ctx *Ctx, cmd string, args [][]byte, allowNoValues bool) (
 	return opts, true
 }
 
-// scanRange computes the range of the snapshot to return and the next cursor.
-// The cursor indexes a sorted snapshot, so a full iteration returns every
-// element exactly once.
-func scanRange(total int, opts scanOptions) (start, end int, next uint64) {
-	start = int(opts.cursor)
+// scanBounds returns the offset a page starts at and the cursor of the call
+// that follows it. The cursor indexes a snapshot of the collection, so a full
+// iteration returns every element exactly once. A cursor of zero means that
+// the traversal is over.
+func scanBounds(cursor uint64, pageLen, total int) (start int, next uint64) {
+	start = int(cursor)
 	if start > total {
 		start = total
 	}
-	end = start + opts.count
+	end := start + pageLen
 	if end > total {
 		end = total
 	}
-	next = uint64(end)
-	if next == uint64(total) {
-		next = 0
+	if end >= total {
+		return start, 0
 	}
-	return start, end, next
+	return start, uint64(end)
 }
 
 // writeScanReply writes the [cursor, [items...]] reply of a SCAN-like
@@ -109,17 +109,19 @@ func cmdHScan(ctx *Ctx) error {
 	if !ok {
 		return nil
 	}
-	fields, found, err := ctx.Store.ScanHash(ctx.Args[1])
+	// The store returns one page of the fields: the snapshot of the hash is
+	// built once and reused by the following calls of the traversal.
+	page, total, found, err := ctx.Store.ScanHashPage(ctx.Args[1], int(opts.cursor), opts.count)
 	if err != nil {
 		return writeWrongType(ctx.W)
 	}
 	if !found {
-		fields = nil
+		page, total = nil, 0
 	}
-	start, end, next := scanRange(len(fields), opts)
+	_, next := scanBounds(opts.cursor, len(page), total)
 
-	matched := make([]store.FieldValue, 0, end-start)
-	for _, fv := range fields[start:end] {
+	matched := make([]store.FieldValue, 0, len(page))
+	for _, fv := range page {
 		if opts.pattern == "" || globMatch(opts.pattern, string(fv.Field)) {
 			matched = append(matched, fv)
 		}
@@ -157,17 +159,17 @@ func cmdSScan(ctx *Ctx) error {
 	if !ok {
 		return nil
 	}
-	members, found, err := ctx.Store.ScanSet(ctx.Args[1])
+	page, total, found, err := ctx.Store.ScanSetPage(ctx.Args[1], int(opts.cursor), opts.count)
 	if err != nil {
 		return writeWrongType(ctx.W)
 	}
 	if !found {
-		members = nil
+		page, total = nil, 0
 	}
-	start, end, next := scanRange(len(members), opts)
+	_, next := scanBounds(opts.cursor, len(page), total)
 
-	matched := make([][]byte, 0, end-start)
-	for _, m := range members[start:end] {
+	matched := make([][]byte, 0, len(page))
+	for _, m := range page {
 		if opts.pattern == "" || globMatch(opts.pattern, string(m)) {
 			matched = append(matched, m)
 		}
@@ -195,17 +197,17 @@ func cmdZScan(ctx *Ctx) error {
 	if !ok {
 		return nil
 	}
-	entries, found, err := ctx.Store.ScanZSet(ctx.Args[1])
+	page, total, found, err := ctx.Store.ScanZSetPage(ctx.Args[1], int(opts.cursor), opts.count)
 	if err != nil {
 		return writeWrongType(ctx.W)
 	}
 	if !found {
-		entries = nil
+		page, total = nil, 0
 	}
-	start, end, next := scanRange(len(entries), opts)
+	_, next := scanBounds(opts.cursor, len(page), total)
 
-	matched := make([]store.ZEntry, 0, end-start)
-	for _, e := range entries[start:end] {
+	matched := make([]store.ZEntry, 0, len(page))
+	for _, e := range page {
 		if opts.pattern == "" || globMatch(opts.pattern, string(e.Member)) {
 			matched = append(matched, e)
 		}

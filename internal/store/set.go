@@ -76,6 +76,9 @@ func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
 	s.touchLocked(dstSh, string(dest))
 	// Remove from the source.
 	delete(se.Set, name)
+	// The member left the source and may enter the destination: the
+	// snapshots of the scan commands do not hold it any more.
+	se.bumpVersion()
 	s.addCost(srcSh, se, -(len(name) + elemOverhead))
 	if len(se.Set) == 0 {
 		srcSh.usedBytes -= se.cost
@@ -84,6 +87,7 @@ func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
 	// Add to the destination.
 	if _, exists := de.Set[name]; !exists {
 		de.Set[name] = struct{}{}
+		de.bumpVersion()
 		s.addCost(dstSh, de, len(name)+elemOverhead)
 	}
 	return true, nil
@@ -124,6 +128,9 @@ func (s *Store) SetPop(key []byte, count int) ([][]byte, error) {
 		m := members[perm[i]]
 		out = append(out, []byte(m))
 		delete(e.Set, m)
+		// The member is gone: the snapshot of the scan commands does not
+		// hold it any more.
+		e.bumpVersion()
 		s.addCost(sh, e, -(len(m) + elemOverhead))
 	}
 	if len(e.Set) == 0 {

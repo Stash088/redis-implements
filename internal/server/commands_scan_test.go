@@ -277,3 +277,44 @@ func TestScanTraversalMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestHScanFollowsChanges checks that a change of the hash between two calls
+// of a traversal is visible: the snapshot the traversal walks is built again
+// when the collection changes.
+func TestHScanFollowsChanges(t *testing.T) {
+	addr := startTestServer(t)
+	c := newClient(t, addr)
+	c.intWant("HSET", "h", "f1", "v1")
+	c.intWant("HSET", "h", "f2", "v2")
+
+	// The first page builds the snapshot of the hash.
+	arr := c.arrWant("HSCAN", "h", "0", "COUNT", "1")
+	if len(arr) != 2 || len(arr[1].Array) != 2 {
+		t.Fatalf("HSCAN: got %+v", arr)
+	}
+	if string(arr[1].Array[0].Str) != "f1" {
+		t.Fatalf("HSCAN: got the field %q, want f1", arr[1].Array[0].Str)
+	}
+	cursor := string(arr[0].Str)
+	if cursor == "0" {
+		t.Fatalf("HSCAN: the traversal ended too early")
+	}
+
+	// A new field invalidates the snapshot: the rest of the traversal shows
+	// it, and every field is returned exactly once.
+	c.intWant("HSET", "h", "f3", "v3")
+	arr = c.arrWant("HSCAN", "h", cursor, "COUNT", "10")
+	if len(arr) != 2 {
+		t.Fatalf("HSCAN: got %+v", arr)
+	}
+	got := map[string]bool{}
+	for i := 0; i < len(arr[1].Array); i += 2 {
+		got[string(arr[1].Array[i].Str)] = true
+	}
+	if !got["f2"] || !got["f3"] {
+		t.Fatalf("HSCAN: got the fields %v, want f2 and f3", got)
+	}
+	if string(arr[0].Str) != "0" {
+		t.Fatalf("HSCAN: got the cursor %q, want 0", arr[0].Str)
+	}
+}

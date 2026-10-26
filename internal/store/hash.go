@@ -90,6 +90,9 @@ func (s *Store) setHashFieldLocked(sh *shard, e *Entry, field string, value []by
 		return
 	}
 	e.Hash[field] = value
+	// A new field changes the set of the fields: the snapshot of the scan
+	// commands does not hold it any more.
+	e.bumpVersion()
 	s.addCost(sh, e, len(field)+len(value))
 }
 
@@ -244,6 +247,9 @@ func (s *Store) HashGetDel(key []byte, fields ...[]byte) ([][]byte, error) {
 		}
 		out[i] = old
 		delete(e.Hash, name)
+		// The field is gone: the snapshot of the scan commands does not
+		// hold it any more.
+		e.bumpVersion()
 		s.addCost(sh, e, -(len(name) + len(old)))
 	}
 	if len(e.Hash) == 0 {
