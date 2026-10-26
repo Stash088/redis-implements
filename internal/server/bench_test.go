@@ -208,3 +208,76 @@ func BenchmarkServerRoundTripGet(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkScanTraversal measures a full SCAN traversal of the keyspace
+// (1000 keys, COUNT=100): the total cost the client pays to walk the keys.
+func BenchmarkScanTraversal(b *testing.B) {
+	addr := benchServer(b, func() {})
+	conn, r, w := benchClient(b, addr)
+	defer conn.Close()
+
+	const keys = 1000
+	for i := 0; i < keys; i++ {
+		cmd := resp.NewArray([]resp.Value{
+			resp.NewBulkString([]byte("SET")),
+			resp.NewBulkString([]byte("scan:key:" + strconv.Itoa(i))),
+			resp.NewBulkString([]byte("v")),
+		})
+		if err := w.WriteValue(cmd); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < keys; i++ {
+		if _, err := r.ReadValue(); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	scan := func(cursor string) (resp.Value, error) {
+		cmd := resp.NewArray([]resp.Value{
+			resp.NewBulkString([]byte("SCAN")),
+			resp.NewBulkString([]byte(cursor)),
+			resp.NewBulkString([]byte("COUNT")),
+			resp.NewBulkString([]byte("100")),
+		})
+		if err := w.WriteValue(cmd); err != nil {
+			return resp.Value{}, err
+		}
+		if err := w.Flush(); err != nil {
+			return resp.Value{}, err
+		}
+		return r.ReadValue()
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cursor := "0"
+		steps := 0
+		seen := 0
+		for {
+			v, err := scan(cursor)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if v.Kind != resp.KindArray || len(v.Array) != 2 {
+				b.Fatalf("bad SCAN reply")
+			}
+			cursor = string(v.Array[0].Str)
+			seen += len(v.Array[1].Array)
+			steps++
+			if cursor == "0" {
+				break
+			}
+			if steps > keys+10 {
+				b.Fatalf("SCAN does not terminate")
+			}
+		}
+		if seen != keys {
+			b.Fatalf("traversal returned %d keys, want %d", seen, keys)
+		}
+	}
+}

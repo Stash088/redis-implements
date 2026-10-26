@@ -43,7 +43,7 @@ func cmdMGet(ctx *Ctx) error {
 		return err
 	}
 	for _, v := range values {
-		if err := ctx.W.WriteBulkString(v); err != nil {
+		if err := ctx.W.WriteBulkLarge(v); err != nil {
 			return err
 		}
 	}

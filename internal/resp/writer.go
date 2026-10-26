@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"math"
+	"net"
 	"strconv"
 )
 
@@ -13,9 +14,18 @@ import (
 // of one per few kilobytes is what makes pipelines pay off.
 const DefaultWriteBufferSize = 64 * 1024
 
+// bulkCRLF is the reply terminator reused by the direct bulk write.
+var bulkCRLF = []byte("\r\n")
+
 // Writer serializes RESP values to an underlying writer.
 type Writer struct {
 	bw *bufio.Writer
+	// raw is the underlying writer (the connection): WriteBulkLarge sends
+	// large payloads straight to it, bypassing the buffer.
+	raw io.Writer
+	// bufSize is the capacity of the buffer; payloads of this size and
+	// bigger take the direct path.
+	bufSize int
 }
 
 // NewWriter returns a Writer that writes RESP values to w using a default-sized
@@ -28,7 +38,7 @@ func NewWriter(w io.Writer) *Writer {
 // the given size. Larger buffers reduce the number of underlying writes when
 // many values are buffered between Flush calls.
 func NewWriterSize(w io.Writer, size int) *Writer {
-	return &Writer{bw: bufio.NewWriterSize(w, size)}
+	return &Writer{bw: bufio.NewWriterSize(w, size), raw: w, bufSize: size}
 }
 
 // Flush flushes any buffered data to the underlying writer.
@@ -82,6 +92,29 @@ func (w *Writer) WriteBulkString(b []byte) error {
 		return err
 	}
 	return w.writeCRLF()
+}
+
+// WriteBulkLarge writes a bulk string whose payload is large enough that
+// copying it into the buffer would dominate the cost (a GET of a 64 KB value).
+// The buffered data is flushed first to keep the byte order, then the header,
+// the payload and the CRLF go to the underlying writer as one vector: on a
+// TCP connection this is a single writev syscall and the payload is never
+// copied into the buffer. Smaller payloads fall back to WriteBulkString.
+func (w *Writer) WriteBulkLarge(b []byte) error {
+	if len(b) < w.bufSize {
+		return w.WriteBulkString(b)
+	}
+	if err := w.bw.Flush(); err != nil {
+		return err
+	}
+	var hdr [72]byte
+	h := hdr[:0]
+	h = append(h, '$')
+	h = strconv.AppendInt(h, int64(len(b)), 10)
+	h = append(h, '\r', '\n')
+	bufs := net.Buffers{h, b, bulkCRLF}
+	_, err := bufs.WriteTo(w.raw)
+	return err
 }
 
 // WriteNullBulk writes "$-1\r\n".
