@@ -2,6 +2,7 @@ package resp
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -232,5 +233,41 @@ func TestWriteBulkLargeBelowThreshold(t *testing.T) {
 	want := "$96\r\n" + strings.Repeat("y", 96) + "\r\n"
 	if got := string(raw.all()); got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestWriteBulkUint checks the spelling of a number written as a bulk
+// string: the header carries the length of the digits, not the number.
+func TestWriteBulkUint(t *testing.T) {
+	for _, n := range []uint64{0, 1, 9, 10, 99, 100, 1000, 65535, 1 << 40, ^uint64(0)} {
+		var buf bytes.Buffer
+		w := NewWriter(&buf)
+		if err := w.WriteBulkUint(n); err != nil {
+			t.Fatalf("WriteBulkUint(%d): %v", n, err)
+		}
+		if err := w.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		want := "$" + strconv.FormatUint(uint64(len(strconv.FormatUint(n, 10))), 10) + "\r\n" +
+			strconv.FormatUint(n, 10) + "\r\n"
+		if got := buf.String(); got != want {
+			t.Errorf("WriteBulkUint(%d): got %q, want %q", n, got, want)
+		}
+	}
+}
+
+// TestWriteNumbersWithoutAllocations checks that the replies with a number
+// do not allocate: the digits go into the scratch buffer of the writer.
+func TestWriteNumbersWithoutAllocations(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	payload := []byte("x")
+	allocs := testing.AllocsPerRun(100, func() {
+		w.WriteInteger(123456)
+		w.WriteBulkUint(654321)
+		w.WriteBulkString(payload)
+	})
+	if allocs != 0 {
+		t.Errorf("the replies allocated %v times, want 0", allocs)
 	}
 }

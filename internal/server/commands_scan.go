@@ -91,7 +91,7 @@ func writeScanReply(ctx *Ctx, next uint64, writeItem func() error) error {
 	if err := ctx.W.WriteArrayHeader(2); err != nil {
 		return err
 	}
-	if err := ctx.W.WriteBulkString([]byte(strconv.FormatUint(next, 10))); err != nil {
+	if err := ctx.W.WriteBulkUint(next); err != nil {
 		return err
 	}
 	// The items are counted before they are written, so the reply is a

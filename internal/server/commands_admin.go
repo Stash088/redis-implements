@@ -115,7 +115,7 @@ func cmdScan(ctx *Ctx) error {
 	if err := ctx.W.WriteArrayHeader(2); err != nil {
 		return err
 	}
-	if err := ctx.W.WriteBulkString([]byte(strconv.FormatUint(cursor, 10))); err != nil {
+	if err := ctx.W.WriteBulkUint(cursor); err != nil {
 		return err
 	}
 	if matched == nil {
