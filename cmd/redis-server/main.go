@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -90,7 +91,11 @@ func main() {
 
 	if cfg.PprofPort > 0 {
 		// The pprof endpoints make it possible to profile the running
-		// server under load, not only the Go benchmarks.
+		// server under load, not only the Go benchmarks. Mutex profiling
+		// is off by default: without the fraction the /debug/pprof/mutex
+		// endpoint always reports an empty profile.
+		runtime.SetMutexProfileFraction(1)
+		runtime.SetBlockProfileRate(100)
 		go func() {
 			log.Printf("server: pprof on http://127.0.0.1:%d/debug/pprof/", cfg.PprofPort)
 			if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", cfg.PprofPort), nil); err != nil {

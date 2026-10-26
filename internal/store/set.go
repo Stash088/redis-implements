@@ -48,10 +48,11 @@ func (s *Store) SetIntersectCard(keys [][]byte, limit int) (int, error) {
 // SetMove moves a member from one set to another. It reports whether the
 // member was moved.
 func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockWrite(source, dest)
+	defer unlock()
 	now := s.clock()
-	se, ok := s.data[string(source)]
+	srcSh := s.shardOf(source)
+	se, ok := srcSh.data[string(source)]
 	if !ok || se.Expired(now) {
 		return false, nil
 	}
@@ -62,27 +63,28 @@ func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
 	if _, ok := se.Set[name]; !ok {
 		return false, nil
 	}
-	de, ok := s.data[string(dest)]
+	dstSh := s.shardOf(dest)
+	de, ok := dstSh.data[string(dest)]
 	if !ok {
 		de = &Entry{Type: TypeSet, Set: make(map[string]struct{}), cost: len(string(dest))}
-		s.usedBytes += len(string(dest))
-		s.data[string(dest)] = de
+		dstSh.usedBytes += len(string(dest))
+		dstSh.data[string(dest)] = de
 	} else if de.Type != TypeSet {
 		return false, ErrWrongType
 	}
-	s.touchLocked(string(source))
-	s.touchLocked(string(dest))
+	s.touchLocked(srcSh, string(source))
+	s.touchLocked(dstSh, string(dest))
 	// Remove from the source.
 	delete(se.Set, name)
-	s.addCost(se, -(len(name) + elemOverhead))
+	s.addCost(srcSh, se, -(len(name) + elemOverhead))
 	if len(se.Set) == 0 {
-		s.usedBytes -= se.cost
-		delete(s.data, string(source))
+		srcSh.usedBytes -= se.cost
+		delete(srcSh.data, string(source))
 	}
 	// Add to the destination.
 	if _, exists := de.Set[name]; !exists {
 		de.Set[name] = struct{}{}
-		s.addCost(de, len(name)+elemOverhead)
+		s.addCost(dstSh, de, len(name)+elemOverhead)
 	}
 	return true, nil
 }
@@ -90,9 +92,10 @@ func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
 // SetPop removes and returns random members of the set. A count of zero pops
 // a single member.
 func (s *Store) SetPop(key []byte, count int) ([][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return nil, nil
 	}
@@ -102,7 +105,7 @@ func (s *Store) SetPop(key []byte, count int) ([][]byte, error) {
 	if len(e.Set) == 0 {
 		return nil, nil
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	members := make([]string, 0, len(e.Set))
 	for m := range e.Set {
 		members = append(members, m)
@@ -121,11 +124,11 @@ func (s *Store) SetPop(key []byte, count int) ([][]byte, error) {
 		m := members[perm[i]]
 		out = append(out, []byte(m))
 		delete(e.Set, m)
-		s.addCost(e, -(len(m) + elemOverhead))
+		s.addCost(sh, e, -(len(m) + elemOverhead))
 	}
 	if len(e.Set) == 0 {
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	return out, nil
 }
@@ -287,12 +290,16 @@ func (s *Store) SetUnion(keys [][]byte) ([][]byte, error) {
 // setLists returns the member sets of the given keys. A missing key yields
 // an empty set, like Redis does.
 func (s *Store) setLists(keys [][]byte) ([]map[string]struct{}, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	unlock := s.lockRead(keys...)
+	defer unlock()
 	now := s.clock()
 	out := make([]map[string]struct{}, 0, len(keys))
 	for _, k := range keys {
-		e, ok := s.data[string(k)]
+		sh := s.shardOf(k)
+		e, ok := sh.data[string(k)]
 		if !ok || e.Expired(now) {
 			out = append(out, map[string]struct{}{})
 			continue
@@ -308,15 +315,16 @@ func (s *Store) setLists(keys [][]byte) ([]map[string]struct{}, error) {
 // SetStore replaces the set under key with the given members and returns the
 // number of members stored.
 func (s *Store) SetStore(key []byte, members [][]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	now := s.clock()
-	if e, ok := s.data[string(key)]; ok && !e.Expired(now) {
+	if e, ok := sh.data[string(key)]; ok && !e.Expired(now) {
 		if e.Type != TypeSet {
 			return 0, ErrWrongType
 		}
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	set := make(map[string]struct{}, len(members))
 	cost := len(string(key))
@@ -329,7 +337,7 @@ func (s *Store) SetStore(key []byte, members [][]byte) (int, error) {
 	}
 	e := &Entry{Type: TypeSet, Set: set, cost: cost}
 	e.lastAccess.Store(now.UnixNano())
-	s.usedBytes += cost
-	s.data[string(key)] = e
+	sh.usedBytes += cost
+	sh.data[string(key)] = e
 	return len(set), nil
 }

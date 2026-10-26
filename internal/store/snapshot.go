@@ -2,19 +2,24 @@ package store
 
 import "time"
 
-// ForEach calls fn for every live key/value pair while holding a read lock.
-// The store must not be mutated from within fn.
+// ForEach calls fn for every live key/value pair. The shards are visited one
+// at a time under their read lock, so fn may observe a keyspace that moves
+// under it (like KEYS in Redis); it must not mutate the store.
 func (s *Store) ForEach(fn func(key string, e *Entry) error) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	now := s.clock()
-	for k, e := range s.data {
-		if e.Expired(now) {
-			continue
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for k, e := range sh.data {
+			if e.Expired(now) {
+				continue
+			}
+			if err := fn(k, e); err != nil {
+				sh.mu.RUnlock()
+				return err
+			}
 		}
-		if err := fn(k, e); err != nil {
-			return err
-		}
+		sh.mu.RUnlock()
 	}
 	return nil
 }
@@ -22,16 +27,17 @@ func (s *Store) ForEach(fn func(key string, e *Entry) error) error {
 // RestoreEntry inserts an entry into the store, replacing any existing value.
 // It is used by persistence loaders to rebuild the dataset.
 func (s *Store) RestoreEntry(key string, e *Entry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOfStr(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	cost := s.entryCostLocked(key, e)
-	if old, ok := s.data[key]; ok {
-		s.usedBytes -= old.cost
+	if old, ok := sh.data[key]; ok {
+		sh.usedBytes -= old.cost
 	}
 	e.cost = cost
 	e.lastAccess.Store(s.clock().UnixNano())
-	s.usedBytes += cost
-	s.data[key] = e
+	sh.usedBytes += cost
+	sh.data[key] = e
 }
 
 // Now returns the store's current clock time.

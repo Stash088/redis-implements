@@ -475,20 +475,21 @@ func parseStreamOptions(args [][]byte, xadd bool) (StreamTrim, bool, bool, bool,
 // than the one of the last entry. ErrStreamNotCreated is returned when the
 // stream is missing and noMkStream is set.
 func (s *Store) StreamAdd(key []byte, mode StreamIDMode, id StreamID, fields [][]byte, noMkStream bool) (StreamID, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		if noMkStream {
 			return StreamID{}, ErrStreamNotCreated
 		}
 		e = &Entry{Type: TypeStream, Stream: &Stream{}, cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeStream {
 		return StreamID{}, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -502,7 +503,7 @@ func (s *Store) StreamAdd(key []byte, mode StreamIDMode, id StreamID, fields [][
 	st.entries = append(st.entries, entry)
 	st.lastID = newID
 	st.entriesAdded++
-	s.addCost(e, entryCost(entry))
+	s.addCost(sh, e, entryCost(entry))
 	return newID, nil
 }
 
@@ -588,16 +589,17 @@ func (s *Store) StreamRange(key []byte, start, end StreamID, count int, rev bool
 // StreamDelete removes the entries of the stream under key with the given
 // identifiers. It returns the number of removed entries.
 func (s *Store) StreamDelete(key []byte, ids []StreamID) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -607,7 +609,7 @@ func (s *Store) StreamDelete(key []byte, ids []StreamID) (int, error) {
 		if idx >= len(st.entries) || st.entries[idx].ID.Compare(id) != 0 {
 			continue
 		}
-		s.addCost(e, -entryCost(st.entries[idx]))
+		s.addCost(sh, e, -entryCost(st.entries[idx]))
 		st.entries = append(st.entries[:idx], st.entries[idx+1:]...)
 		if id.Compare(st.maxDeletedID) > 0 {
 			st.maxDeletedID = id
@@ -620,16 +622,17 @@ func (s *Store) StreamDelete(key []byte, ids []StreamID) (int, error) {
 // StreamTrim removes the entries of the stream under key that exceed the
 // given limit. It returns the number of removed entries.
 func (s *Store) StreamTrim(key []byte, t StreamTrim) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -656,7 +659,7 @@ func (s *Store) StreamTrim(key []byte, t StreamTrim) (int, error) {
 		return 0, nil
 	}
 	for i := 0; i < cut; i++ {
-		s.addCost(e, -entryCost(st.entries[i]))
+		s.addCost(sh, e, -entryCost(st.entries[i]))
 	}
 	st.entries = append(st.entries[:0], st.entries[cut:]...)
 	return cut, nil
@@ -696,16 +699,17 @@ func approximateCut(st *Stream, t StreamTrim, exact int) int {
 // entries ever added to the stream is updated as well. When maxDeletedID is
 // not nil, the highest deleted identifier of the stream is updated too.
 func (s *Store) StreamSetID(key []byte, id StreamID, entriesAdded uint64, setEntriesAdded bool, maxDeletedID *StreamID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream

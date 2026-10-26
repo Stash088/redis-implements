@@ -1,5 +1,7 @@
 package store
 
+import "math/rand"
+
 // elemOverhead approximates the per-element memory overhead of a container
 // member (map/skiplist bookkeeping).
 const elemOverhead = 8
@@ -7,43 +9,83 @@ const elemOverhead = 8
 // EvictCycle evicts keys until the store is within maxBytes or no victim can
 // be found, returning the number of evicted keys. policy is one of
 // allkeys-lru, volatile-lru, allkeys-random, volatile-random, volatile-ttl;
-// each cycle samples `samples` random keys (randomized Go map iteration) and
-// picks the victim per policy, mirroring Redis maxmemory-samples.
+// each cycle samples `samples` random keys (randomized Go map iteration, the
+// shards are walked from a random offset) and picks the victim per policy,
+// mirroring Redis maxmemory-samples.
 func (s *Store) EvictCycle(policy string, samples int, maxBytes int64) int {
 	if samples < 1 {
 		samples = 5
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	total := s.UsedBytes()
 	evicted := 0
-	for int64(s.usedBytes) > maxBytes {
-		if !s.evictOneLocked(policy, samples) {
+	// consecutiveFails bounds the loop when the sampled victims keep
+	// disappearing (removed concurrently between the sample and the
+	// removal), mirroring the "sample found nothing" exit of a single-map
+	// store.
+	consecutiveFails := 0
+	for int64(total) > maxBytes && consecutiveFails < shardCount {
+		sh, victim, ok := s.pickVictim(policy, samples)
+		if !ok {
 			break
 		}
-		evicted++
+		sh.mu.Lock()
+		// The victim may have been modified or removed while the lock was
+		// not held; only a present entry is a valid victim.
+		if e, present := sh.data[victim.key]; present && e == victim.e {
+			sh.usedBytes -= e.cost
+			s.touchLocked(sh, victim.key)
+			delete(sh.data, victim.key)
+			total -= e.cost
+			evicted++
+			consecutiveFails = 0
+		} else {
+			consecutiveFails++
+		}
+		sh.mu.Unlock()
 	}
 	return evicted
 }
 
-// evictOneLocked evicts a single victim according to policy and reports
-// whether one was found. Callers must hold s.mu for writing.
-func (s *Store) evictOneLocked(policy string, samples int) bool {
+// victim is a sampled eviction candidate.
+type victim struct {
+	key string
+	e   *Entry
+}
+
+// pickVictim samples candidate keys across the shards (starting at a random
+// shard, like the expiry cycle) until the sample holds `samples` candidates
+// or the keyspace is exhausted, then returns the victim per policy. The
+// candidate's shard is returned so the caller can remove the victim under its
+// write lock; the caller must re-validate the victim once the lock is held.
+func (s *Store) pickVictim(policy string, samples int) (*shard, *victim, bool) {
 	volatile := policy == "volatile-lru" || policy == "volatile-random" || policy == "volatile-ttl"
-	type cand struct {
-		key string
-		e   *Entry
-	}
-	sample := make([]cand, 0, samples)
-	for k, e := range s.data {
-		sample = append(sample, cand{k, e})
-		if len(sample) >= samples {
-			break
+	sample := make([]victim, 0, samples)
+	owners := make([]int, 0, samples) // shard index of every candidate
+	start := rand.Intn(shardCount)
+	for i := 0; i < shardCount && len(sample) < samples; i++ {
+		si := (start + i) & shardMask
+		sh := &s.shards[si]
+		sh.mu.RLock()
+		for k, e := range sh.data {
+			sample = append(sample, victim{k, e})
+			owners = append(owners, si)
+			if len(sample) >= samples {
+				break
+			}
 		}
+		sh.mu.RUnlock()
 	}
-	if len(sample) == 0 {
-		return false
+	best := selectVictim(sample, volatile, policy)
+	if best < 0 {
+		return nil, nil, false
 	}
-	var victim *cand
+	return &s.shards[owners[best]], &sample[best], true
+}
+
+// selectVictim returns the index of the victim in the sample according to the
+// policy, or -1 when no candidate qualifies.
+func selectVictim(sample []victim, volatile bool, policy string) int {
+	best := -1
 	for i := range sample {
 		c := &sample[i]
 		if volatile && c.e.ExpiresAt.IsZero() {
@@ -51,34 +93,27 @@ func (s *Store) evictOneLocked(policy string, samples int) bool {
 		}
 		switch policy {
 		case "volatile-ttl":
-			if victim == nil || c.e.ExpiresAt.Before(victim.e.ExpiresAt) {
-				victim = c
+			if best < 0 || c.e.ExpiresAt.Before(sample[best].e.ExpiresAt) {
+				best = i
 			}
 		case "allkeys-lru", "volatile-lru":
-			if victim == nil || c.e.lastAccess.Load() < victim.e.lastAccess.Load() {
-				victim = c
+			if best < 0 || c.e.lastAccess.Load() < sample[best].e.lastAccess.Load() {
+				best = i
 			}
 		case "allkeys-random", "volatile-random":
-			if victim == nil {
-				victim = c
+			if best < 0 {
+				best = i
 			}
 		default:
 			// Unknown policy (e.g. noeviction): never evict.
-			return false
+			return -1
 		}
 	}
-	if victim == nil {
-		return false
-	}
-	s.usedBytes -= victim.e.cost
-	s.touchLocked(victim.key)
-	delete(s.data, victim.key)
-	return true
+	return best
 }
 
 // entryCostLocked computes the approximate footprint of e under key:
 // key length plus payload (elements get an overhead allowance).
-// Callers must hold s.mu.
 func (s *Store) entryCostLocked(key string, e *Entry) int {
 	cost := len(key)
 	switch e.Type {
@@ -109,14 +144,13 @@ func (s *Store) entryCostLocked(key string, e *Entry) int {
 }
 
 // markAccess updates the entry's last-access timestamp (allkeys-lru).
-// Callers must hold s.mu.
 func (s *Store) markAccess(e *Entry) {
 	e.lastAccess.Store(s.clock().UnixNano())
 }
 
-// addCost applies a memory delta to the entry and the store total.
-// Callers must hold s.mu.
-func (s *Store) addCost(e *Entry, delta int) {
+// addCost applies a memory delta to the entry and the shard total.
+// Callers must hold the write lock of the shard that owns the entry.
+func (s *Store) addCost(sh *shard, e *Entry, delta int) {
 	e.cost += delta
-	s.usedBytes += delta
+	sh.usedBytes += delta
 }

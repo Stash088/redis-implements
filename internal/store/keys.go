@@ -3,25 +3,30 @@ package store
 import "time"
 
 // Rename moves the value of a key to another key. It reports whether the
-// source key existed.
+// source key existed. The shards of both keys are locked, so the rename is
+// atomic with respect to both.
 func (s *Store) Rename(key, newKey []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	unlock := s.lockWrite(key, newKey)
+	defer unlock()
+	srcSh := s.shardOf(key)
+	e, ok := s.entryLocked(srcSh, key)
 	if !ok {
 		return false, nil
 	}
 	old := string(key)
 	dst := string(newKey)
 	if old != dst {
-		s.touchLocked(old)
-		s.touchLocked(dst)
+		dstSh := s.shardOfStr(dst)
+		s.touchLocked(srcSh, old)
+		s.touchLocked(dstSh, dst)
 		// The destination is replaced.
-		if prev, exists := s.data[dst]; exists {
-			s.usedBytes -= prev.cost
+		if prev, exists := dstSh.data[dst]; exists {
+			dstSh.usedBytes -= prev.cost
 		}
-		s.data[dst] = e
-		delete(s.data, old)
+		dstSh.data[dst] = e
+		delete(srcSh.data, old)
+		srcSh.usedBytes -= e.cost
+		dstSh.usedBytes += e.cost
 	}
 	return true, nil
 }
@@ -29,9 +34,10 @@ func (s *Store) Rename(key, newKey []byte) (bool, error) {
 // RenameNX moves the value of a key to another key, but only when the
 // destination does not exist. It reports whether the key was renamed.
 func (s *Store) RenameNX(key, newKey []byte) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	unlock := s.lockWrite(key, newKey)
+	defer unlock()
+	srcSh := s.shardOf(key)
+	e, ok := s.entryLocked(srcSh, key)
 	if !ok {
 		return false, nil
 	}
@@ -41,25 +47,29 @@ func (s *Store) RenameNX(key, newKey []byte) (bool, error) {
 		return true, nil
 	}
 	now := s.clock()
-	if prev, exists := s.data[dst]; exists && !prev.Expired(now) {
+	dstSh := s.shardOfStr(dst)
+	if prev, exists := dstSh.data[dst]; exists && !prev.Expired(now) {
 		return false, nil
 	}
-	s.touchLocked(old)
-	s.touchLocked(dst)
-	if prev, exists := s.data[dst]; exists {
-		s.usedBytes -= prev.cost
+	s.touchLocked(srcSh, old)
+	s.touchLocked(dstSh, dst)
+	if prev, exists := dstSh.data[dst]; exists {
+		dstSh.usedBytes -= prev.cost
 	}
-	s.data[dst] = e
-	delete(s.data, old)
+	dstSh.data[dst] = e
+	delete(srcSh.data, old)
+	srcSh.usedBytes -= e.cost
+	dstSh.usedBytes += e.cost
 	return true, nil
 }
 
 // CopyEntry returns a copy of the entry under key, or nil when the key does
 // not exist. The copy is deep, so the caller may store it in another store.
 func (s *Store) CopyEntry(key []byte) (*Entry, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.entryLockedRO(key)
+	sh := s.shardOf(key)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	e, ok := s.entryLockedRO(sh, key)
 	if !ok {
 		return nil, false
 	}
@@ -67,8 +77,9 @@ func (s *Store) CopyEntry(key []byte) (*Entry, bool) {
 }
 
 // entryLockedRO returns the live entry for key without removing expired ones.
-func (s *Store) entryLockedRO(key []byte) (*Entry, bool) {
-	e, ok := s.data[string(key)]
+// Callers must hold the read (or write) lock of the shard that owns the key.
+func (s *Store) entryLockedRO(sh *shard, key []byte) (*Entry, bool) {
+	e, ok := sh.data[string(key)]
 	if !ok {
 		return nil, false
 	}
@@ -123,25 +134,27 @@ func copyEntry(e *Entry) *Entry {
 // StoreEntry stores a copy of the given entry under a key. It replaces the
 // existing value.
 func (s *Store) StoreEntry(key []byte, e *Entry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.touchKeyLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s.touchKeyLocked(sh, key)
 	cost := s.entryCostLocked(string(key), e)
-	if old, ok := s.data[string(key)]; ok {
-		s.usedBytes -= old.cost
+	if old, ok := sh.data[string(key)]; ok {
+		sh.usedBytes -= old.cost
 	}
 	e.cost = cost
 	e.lastAccess.Store(s.clock().UnixNano())
-	s.usedBytes += cost
-	s.data[string(key)] = e
+	sh.usedBytes += cost
+	sh.data[string(key)] = e
 }
 
 // ExpireTime returns the absolute expiration of a key as a Unix timestamp in
 // seconds (-1 when the key has no TTL) and whether the key exists.
 func (s *Store) ExpireTime(key []byte) (int64, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.entryLockedRO(key)
+	sh := s.shardOf(key)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	e, ok := s.entryLockedRO(sh, key)
 	if !ok {
 		return -2, false
 	}
@@ -154,9 +167,10 @@ func (s *Store) ExpireTime(key []byte) (int64, bool) {
 // PExpireTime returns the absolute expiration of a key as a Unix timestamp in
 // milliseconds.
 func (s *Store) PExpireTime(key []byte) (int64, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.entryLockedRO(key)
+	sh := s.shardOf(key)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	e, ok := s.entryLockedRO(sh, key)
 	if !ok {
 		return -2, false
 	}
@@ -167,7 +181,8 @@ func (s *Store) PExpireTime(key []byte) (int64, bool) {
 }
 
 // MoveEntry moves the value of a key to another store. It reports whether the
-// source key existed.
+// source key existed. The two stores are independent, so the move is not
+// atomic (like Redis, which copies and deletes in two steps too).
 func (s *Store) MoveEntry(key []byte, dest *Store) (bool, error) {
 	e, ok := s.CopyEntry(key)
 	if !ok {
@@ -180,9 +195,10 @@ func (s *Store) MoveEntry(key []byte, dest *Store) (bool, error) {
 
 // EntryType returns the type of the value under key.
 func (s *Store) EntryType(key []byte) (Type, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.entryLockedRO(key)
+	sh := s.shardOf(key)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	e, ok := s.entryLockedRO(sh, key)
 	if !ok {
 		return 0, false
 	}
@@ -248,15 +264,16 @@ func (s *Store) SortElements(key []byte) ([][]byte, error) {
 
 // SetList replaces the list under key with the given elements.
 func (s *Store) SetList(key []byte, elems [][]byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	now := s.clock()
-	if e, ok := s.data[string(key)]; ok {
+	if e, ok := sh.data[string(key)]; ok {
 		if !e.Expired(now) && e.Type != TypeList {
 			return 0, ErrWrongType
 		}
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 	}
 	l := NewList()
 	cost := len(string(key))
@@ -266,8 +283,8 @@ func (s *Store) SetList(key []byte, elems [][]byte) (int, error) {
 	}
 	e := &Entry{Type: TypeList, List: l, cost: cost}
 	e.lastAccess.Store(now.UnixNano())
-	s.usedBytes += cost
-	s.data[string(key)] = e
+	sh.usedBytes += cost
+	sh.data[string(key)] = e
 	return len(elems), nil
 }
 

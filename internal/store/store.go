@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/rand"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -88,41 +87,52 @@ func (e *Entry) Expired(now time.Time) bool {
 	return !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt)
 }
 
-// Store is a thread-safe in-memory key/value store.
+// Store is a thread-safe in-memory key/value store. The keyspace is split
+// into independently locked shards (see shard.go): a command takes the lock of
+// the shard of every key it touches, so commands on different shards run
+// without contending on a mutex.
 type Store struct {
-	mu        sync.RWMutex
-	data      map[string]*Entry
-	watches   map[string]map[Watcher]struct{} // WATCH/CAS registry
-	usedBytes int                             // sum of entry costs
-	clock     func() time.Time                // injectable for tests
+	shards [shardCount]shard
+	clock  func() time.Time // injectable for tests
 }
 
 // New returns an empty Store.
 func New() *Store {
-	return &Store{
-		data:    make(map[string]*Entry),
-		watches: make(map[string]map[Watcher]struct{}),
-		clock:   time.Now,
+	s := &Store{clock: time.Now}
+	for i := range s.shards {
+		s.shards[i].init()
 	}
+	return s
 }
 
-// UsedBytes returns the approximate memory footprint of live entries.
+// UsedBytes returns the approximate memory footprint of live entries. The
+// shards are visited one at a time, so the total may interleave with
+// concurrent writes; it is used for reporting and for the eviction budget,
+// where a moving total is fine.
 func (s *Store) UsedBytes() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.usedBytes
+	total := 0
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		total += sh.usedBytes
+		sh.mu.RUnlock()
+	}
+	return total
 }
 
 // Len returns the number of live keys.
 func (s *Store) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	now := s.clock()
 	n := 0
-	for _, e := range s.data {
-		if !e.Expired(now) {
-			n++
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for _, e := range sh.data {
+			if !e.Expired(now) {
+				n++
+			}
 		}
+		sh.mu.RUnlock()
 	}
 	return n
 }
@@ -130,12 +140,16 @@ func (s *Store) Len() int {
 // Touch updates the last access time of the given keys and returns the
 // number of keys that exist.
 func (s *Store) Touch(keys ...[]byte) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if len(keys) == 0 {
+		return 0
+	}
+	unlock := s.lockWrite(keys...)
+	defer unlock()
 	now := s.clock()
 	n := 0
 	for _, key := range keys {
-		e, ok := s.data[string(key)]
+		sh := s.shardOf(key)
+		e, ok := sh.data[string(key)]
 		if !ok || e.Expired(now) {
 			continue
 		}
@@ -147,55 +161,61 @@ func (s *Store) Touch(keys ...[]byte) int {
 
 // RandomKey returns a random live key. ok is false when the store is empty.
 func (s *Store) RandomKey() ([]byte, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	now := s.clock()
-	keys := make([][]byte, 0, len(s.data))
-	for k, e := range s.data {
-		if e.Expired(now) {
-			continue
+	start := rand.Intn(shardCount)
+	for i := 0; i < shardCount; i++ {
+		sh := &s.shards[(start+i)&shardMask]
+		sh.mu.RLock()
+		for k, e := range sh.data {
+			if e.Expired(now) {
+				continue
+			}
+			key := []byte(k)
+			sh.mu.RUnlock()
+			return key, true
 		}
-		keys = append(keys, []byte(k))
+		sh.mu.RUnlock()
 	}
-	if len(keys) == 0 {
-		return nil, false
-	}
-	return keys[rand.Intn(len(keys))], true
+	return nil, false
 }
 
 // Stats returns the number of live keys and the number of keys that carry a
 // TTL. It backs the "# Keyspace" section of INFO.
 func (s *Store) Stats() (keys, expires int) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	now := s.clock()
-	for _, e := range s.data {
-		if e.Expired(now) {
-			continue
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for _, e := range sh.data {
+			if e.Expired(now) {
+				continue
+			}
+			keys++
+			if !e.ExpiresAt.IsZero() {
+				expires++
+			}
 		}
-		keys++
-		if !e.ExpiresAt.IsZero() {
-			expires++
-		}
+		sh.mu.RUnlock()
 	}
 	return keys, expires
 }
 
 // entryLocked returns the live entry for key, or nil when missing/expired
-// (removing it in the latter case). Callers must hold s.mu for writing.
-func (s *Store) entryLocked(key []byte) (*Entry, bool) {
+// (removing it in the latter case). Callers must hold the write lock of the
+// shard that owns the key.
+func (s *Store) entryLocked(sh *shard, key []byte) (*Entry, bool) {
 	now := s.clock()
 	// The lookup with a []byte key does not copy the bytes.
-	e, ok := s.data[string(key)]
+	e, ok := sh.data[string(key)]
 	if !ok {
 		return nil, false
 	}
 	if e.Expired(now) {
 		// Lazy expiration counts as a modification (like Redis), so WATCH
 		// clients get their transaction aborted.
-		s.touchKeyLocked(key)
-		s.usedBytes -= e.cost
-		delete(s.data, string(key))
+		s.touchKeyLocked(sh, key)
+		sh.usedBytes -= e.cost
+		delete(sh.data, string(key))
 		return nil, false
 	}
 	e.lastAccess.Store(now.UnixNano())
@@ -203,7 +223,7 @@ func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 }
 
 // readEntry runs a read-only operation on the entry stored under key while
-// the store's read lock is held, so several readers can work in parallel.
+// the read lock of its shard is held, so several readers can work in parallel.
 // It reports ok=false when the key is missing or its TTL has passed.
 //
 // The closure must not modify the entry. The slices it returns stay valid
@@ -211,16 +231,17 @@ func (s *Store) entryLocked(key []byte) (*Entry, bool) {
 // (see the Entry invariant), so a reader may keep using them.
 func readEntry[T any](s *Store, key []byte, fn func(e *Entry) (T, error)) (T, bool, error) {
 	var zero T
+	sh := s.shardOf(key)
 	// The lookup with a []byte key does not copy the bytes.
-	s.mu.RLock()
-	e, ok := s.data[string(key)]
+	sh.mu.RLock()
+	e, ok := sh.data[string(key)]
 	if !ok {
-		s.mu.RUnlock()
+		sh.mu.RUnlock()
 		return zero, false, nil
 	}
 	now := s.clock()
 	if e.Expired(now) {
-		s.mu.RUnlock()
+		sh.mu.RUnlock()
 		// The key is gone as far as the caller is concerned; drop it from
 		// the map (and notify its watchers) in a separate write-locked
 		// step, since the read lock cannot be upgraded.
@@ -229,23 +250,24 @@ func readEntry[T any](s *Store, key []byte, fn func(e *Entry) (T, error)) (T, bo
 	}
 	e.lastAccess.Store(now.UnixNano())
 	v, err := fn(e)
-	s.mu.RUnlock()
+	sh.mu.RUnlock()
 	return v, true, err
 }
 
 // expireKey removes an expired entry from the map and notifies its watchers,
-// like Redis does on a lazy lookup. It takes the write lock, so callers must
-// not hold any lock.
+// like Redis does on a lazy lookup. It takes the write lock of the shard, so
+// callers must not hold any lock.
 func (s *Store) expireKey(k string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.data[k]
+	sh := s.shardOfStr(k)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := sh.data[k]
 	if !ok || !e.Expired(s.clock()) {
 		return
 	}
-	s.touchLocked(k)
-	s.usedBytes -= e.cost
-	delete(s.data, k)
+	s.touchLocked(sh, k)
+	sh.usedBytes -= e.cost
+	delete(sh.data, k)
 }
 
 // copyByteSlices returns a copy of the slice of byte slices.
@@ -263,25 +285,25 @@ func copyByteSlices(vals [][]byte) [][]byte {
 }
 
 // newStringEntry replaces whatever is stored under key with a string entry.
-// Callers must hold s.mu.
-func (s *Store) newStringEntry(key []byte, value []byte, expiresAt time.Time) {
-	s.touchKeyLocked(key)
+// Callers must hold the write lock of the shard that owns the key.
+func (s *Store) newStringEntry(sh *shard, key []byte, value []byte, expiresAt time.Time) {
+	s.touchKeyLocked(sh, key)
 	k := string(key)
 	if value == nil {
-		if e, ok := s.data[k]; ok {
-			s.usedBytes -= e.cost
-			delete(s.data, k)
+		if e, ok := sh.data[k]; ok {
+			sh.usedBytes -= e.cost
+			delete(sh.data, k)
 		}
 		return
 	}
 	cost := len(k) + len(value)
-	s.usedBytes += cost
-	if e, ok := s.data[k]; ok {
-		s.usedBytes -= e.cost
+	sh.usedBytes += cost
+	if e, ok := sh.data[k]; ok {
+		sh.usedBytes -= e.cost
 	}
 	e := &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost}
 	e.lastAccess.Store(s.clock().UnixNano())
-	s.data[k] = e
+	sh.data[k] = e
 }
 
 // GetString returns the string value stored under key. ok is false when the
@@ -309,42 +331,49 @@ func (s *Store) GetType(key []byte) (Type, bool) {
 
 // SetString stores a string value under key, overwriting any existing type.
 func (s *Store) SetString(key, value []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.newStringEntry(key, value, time.Time{})
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s.newStringEntry(sh, key, value, time.Time{})
 }
 
 // SetStringWithTTL stores a string value under key with a TTL, overwriting any
 // existing type.
 func (s *Store) SetStringWithTTL(key, value []byte, ttl time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.newStringEntry(key, value, s.clock().Add(ttl))
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s.newStringEntry(sh, key, value, s.clock().Add(ttl))
 }
 
 // SetStringWithExpiryAt stores a string value under key, expiring at the given
 // instant.
 func (s *Store) SetStringWithExpiryAt(key, value []byte, expiresAt time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.newStringEntry(key, value, expiresAt)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s.newStringEntry(sh, key, value, expiresAt)
 }
 
 // Delete removes one or more keys, returning the number of removed keys.
 func (s *Store) Delete(keys ...[]byte) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if len(keys) == 0 {
+		return 0
+	}
+	unlock := s.lockWrite(keys...)
+	defer unlock()
 	now := s.clock()
 	removed := 0
 	for _, key := range keys {
+		sh := s.shardOf(key)
 		k := string(key)
-		if e, ok := s.data[k]; ok {
+		if e, ok := sh.data[k]; ok {
 			if !e.Expired(now) {
 				removed++
 			}
-			s.touchLocked(k)
-			s.usedBytes -= e.cost
-			delete(s.data, k)
+			s.touchLocked(sh, k)
+			sh.usedBytes -= e.cost
+			delete(sh.data, k)
 		}
 	}
 	return removed
@@ -352,12 +381,16 @@ func (s *Store) Delete(keys ...[]byte) int {
 
 // Exists reports how many of the given keys exist (and are not expired).
 func (s *Store) Exists(keys ...[]byte) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	if len(keys) == 0 {
+		return 0
+	}
+	unlock := s.lockRead(keys...)
+	defer unlock()
 	now := s.clock()
 	n := 0
 	for _, key := range keys {
-		if e, ok := s.data[string(key)]; ok && !e.Expired(now) {
+		sh := s.shardOf(key)
+		if e, ok := sh.data[string(key)]; ok && !e.Expired(now) {
 			n++
 		}
 	}
@@ -372,14 +405,15 @@ func (s *Store) Expire(key []byte, ttl time.Duration) bool {
 // ExpireAt sets an absolute expiry instant on key. ok is false when the key
 // does not exist.
 func (s *Store) ExpireAt(key []byte, expiresAt time.Time) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return false
 	}
 	e.ExpiresAt = expiresAt
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	return true
 }
 
@@ -400,14 +434,15 @@ func (s *Store) TTL(key []byte) (time.Duration, bool) {
 
 // Persist removes any TTL on key. ok is false when the key does not exist.
 func (s *Store) Persist(key []byte) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return false
 	}
 	e.ExpiresAt = time.Time{}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	return true
 }
 
@@ -415,11 +450,12 @@ func (s *Store) Persist(key []byte) bool {
 // key is missing it is treated as 0. A non-string value returns ErrWrongType, a
 // non-numeric one ErrNotInteger, and overflow ErrOverflow.
 func (s *Store) IncrBy(key []byte, delta int64) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	var current int64
 	var expiresAt time.Time
-	if e, ok := s.entryLocked(key); ok {
+	if e, ok := s.entryLocked(sh, key); ok {
 		if e.Type != TypeString {
 			return 0, ErrWrongType
 		}
@@ -437,7 +473,7 @@ func (s *Store) IncrBy(key []byte, delta int64) (int64, error) {
 		return 0, ErrOverflow
 	}
 	current += delta
-	s.newStringEntry(key, strconv.AppendInt(nil, current, 10), expiresAt)
+	s.newStringEntry(sh, key, strconv.AppendInt(nil, current, 10), expiresAt)
 	return current, nil
 }
 
@@ -447,21 +483,22 @@ func (s *Store) IncrBy(key []byte, delta int64) (int64, error) {
 // The stored buffer is never modified in place: readers may still be copying
 // the old value into a socket, so APPEND builds a new buffer and publishes it.
 func (s *Store) Append(key, suffix []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.touchKeyLocked(key)
-	if e, ok := s.entryLocked(key); ok {
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s.touchKeyLocked(sh, key)
+	if e, ok := s.entryLocked(sh, key); ok {
 		if e.Type != TypeString {
 			return 0, ErrWrongType
 		}
 		grown := make([]byte, 0, len(e.Str)+len(suffix))
 		grown = append(grown, e.Str...)
 		grown = append(grown, suffix...)
-		s.addCost(e, len(suffix))
+		s.addCost(sh, e, len(suffix))
 		e.Str = grown
 		return len(e.Str), nil
 	}
-	s.newStringEntry(key, append([]byte(nil), suffix...), time.Time{})
+	s.newStringEntry(sh, key, append([]byte(nil), suffix...), time.Time{})
 	return len(suffix), nil
 }
 
@@ -476,36 +513,60 @@ func (s *Store) StrLen(key []byte) (int, bool, error) {
 	})
 }
 
-// Keys returns all live keys.
+// Keys returns all live keys. The shards are visited one at a time, so the
+// result may interleave with concurrent writes (like KEYS in Redis, which also
+// runs over a moving dataset).
 func (s *Store) Keys() [][]byte {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	now := s.clock()
-	keys := make([][]byte, 0, len(s.data))
-	for k, e := range s.data {
-		if e.Expired(now) {
-			continue
+	keys := make([][]byte, 0, s.approxLen())
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for k, e := range sh.data {
+			if e.Expired(now) {
+				continue
+			}
+			keys = append(keys, []byte(k))
 		}
-		keys = append(keys, []byte(k))
+		sh.mu.RUnlock()
 	}
 	return keys
 }
 
-// Flush removes all keys and returns the number removed.
-func (s *Store) Flush() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := s.lenLocked()
-	for k := range s.data {
-		s.touchLocked(k)
+// approxLen returns the total number of entries (including expired ones, which
+// have not been collected yet) across the shards; it is a capacity hint.
+func (s *Store) approxLen() int {
+	n := 0
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		n += len(sh.data)
+		sh.mu.RUnlock()
 	}
-	s.data = make(map[string]*Entry)
-	s.usedBytes = 0
+	return n
+}
+
+// Flush removes all keys and returns the number removed. The shards are
+// cleared one at a time.
+func (s *Store) Flush() int {
+	n := 0
+	now := s.clock()
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for k := range sh.data {
+			s.touchLocked(sh, k)
+		}
+		n += s.lenLocked(sh, now)
+		sh.data = make(map[string]*Entry)
+		sh.usedBytes = 0
+		sh.mu.Unlock()
+	}
 	return n
 }
 
 // Active expiration works like Redis: every pass checks a sample of the
-// keyspace instead of scanning all of it. A full scan under the write lock
+// keyspace instead of scanning all of it. A full scan under the write locks
 // would delay every client of the database for the time of the scan, which
 // shows up as a p99 spike.
 const (
@@ -538,48 +599,56 @@ func (s *Store) ExpireCycle() int {
 }
 
 // sampleExpired returns up to expireSample expired keys. The keys are picked
-// from a random position of the map (the iteration order of a Go map is
-// randomized), so the sample is spread over the keyspace.
+// from a random shard, at a random position of its map (the iteration order of
+// a Go map is randomized), and the walk continues over the following shards
+// until the sample is full, so the sample is spread over the keyspace.
 func (s *Store) sampleExpired(deadline time.Time) []string {
 	now := s.clock()
 	var expired []string
-	s.mu.RLock()
 	sampled := 0
-	for k, e := range s.data {
-		sampled++
-		if e.Expired(now) {
-			expired = append(expired, k)
+	start := rand.Intn(shardCount)
+	for i := 0; i < shardCount && sampled < expireSample; i++ {
+		sh := &s.shards[(start+i)&shardMask]
+		sh.mu.RLock()
+		for k, e := range sh.data {
+			sampled++
+			if e.Expired(now) {
+				expired = append(expired, k)
+			}
+			if sampled >= expireSample {
+				break
+			}
 		}
-		if sampled >= expireSample {
-			break
-		}
+		sh.mu.RUnlock()
 	}
-	s.mu.RUnlock()
 	return expired
 }
 
-// removeExpired deletes the given keys, one at a time, so that the write
+// removeExpired deletes the given keys, one at a time, so that a shard's write
 // lock is held for as short a time as possible.
 func (s *Store) removeExpired(keys []string) int {
 	removed := 0
 	for _, k := range keys {
-		s.mu.Lock()
-		e, ok := s.data[k]
+		sh := s.shardOfStr(k)
+		sh.mu.Lock()
+		e, ok := sh.data[k]
 		if ok && e.Expired(s.clock()) {
-			s.touchLocked(k)
-			s.usedBytes -= e.cost
-			delete(s.data, k)
+			s.touchLocked(sh, k)
+			sh.usedBytes -= e.cost
+			delete(sh.data, k)
 			removed++
 		}
-		s.mu.Unlock()
+		sh.mu.Unlock()
 	}
 	return removed
 }
 
-func (s *Store) lenLocked() int {
-	now := s.clock()
+// lenLocked counts the live entries of a shard. Callers must hold the write
+// lock of the shard (a read lock works too; it is only called under write
+// locks today).
+func (s *Store) lenLocked(sh *shard, now time.Time) int {
 	n := 0
-	for _, e := range s.data {
+	for _, e := range sh.data {
 		if !e.Expired(now) {
 			n++
 		}

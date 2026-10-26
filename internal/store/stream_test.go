@@ -296,7 +296,7 @@ func TestStreamCopyEntry(t *testing.T) {
 		t.Fatalf("EntryType: got %v %v, want stream true", e, ok)
 	}
 	// The copy of a stream holds the same entries.
-	copied := copyEntry(s.data["s"])
+	copied := copyEntry(s.shardOfStr("s").data["s"])
 	if copied.Stream.Len() != 1 {
 		t.Errorf("got %d entries in the copy, want 1", copied.Stream.Len())
 	}

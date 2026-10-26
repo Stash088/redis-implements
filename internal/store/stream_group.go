@@ -282,20 +282,21 @@ func (cg *StreamGroup) removePending(id StreamID) bool {
 //
 // The stream is created when it is missing and mkStream is set.
 func (s *Store) StreamGroupCreate(key []byte, group string, id StreamID, entriesRead uint64, setEntriesRead bool, mkStream bool) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		if !mkStream {
 			return false, ErrStreamNotFound
 		}
 		e = &Entry{Type: TypeStream, Stream: &Stream{}, cost: len(string(key))}
-		s.usedBytes += len(string(key))
-		s.data[string(key)] = e
+		sh.usedBytes += len(string(key))
+		sh.data[string(key)] = e
 	} else if e.Type != TypeStream {
 		return false, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -322,16 +323,17 @@ func (s *Store) StreamGroupCreate(key []byte, group string, id StreamID, entries
 // StreamGroupDestroy removes the consumer group of the stream under key. It
 // reports whether the group existed.
 func (s *Store) StreamGroupDestroy(key []byte, group string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return false, ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return false, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -345,16 +347,17 @@ func (s *Store) StreamGroupDestroy(key []byte, group string) (bool, error) {
 // StreamGroupSetID sets the identifier of the last entry delivered to the
 // consumer group of the stream under key.
 func (s *Store) StreamGroupSetID(key []byte, group string, id StreamID, entriesRead uint64, setEntriesRead bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -375,16 +378,17 @@ func (s *Store) StreamGroupSetID(key []byte, group string, id StreamID, entriesR
 // StreamGroupCreateConsumer creates a consumer in the consumer group of the
 // stream under key. It reports false when the consumer already exists.
 func (s *Store) StreamGroupCreateConsumer(key []byte, group, consumer string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return false, ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return false, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -405,16 +409,17 @@ func (s *Store) StreamGroupCreateConsumer(key []byte, group, consumer string) (b
 // StreamGroupDelConsumer removes a consumer of the consumer group of the
 // stream under key and returns the number of its pending entries.
 func (s *Store) StreamGroupDelConsumer(key []byte, group, consumer string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -440,16 +445,17 @@ func (s *Store) StreamGroupDelConsumer(key []byte, group, consumer string) (int,
 // In the StreamReadHistory mode the pending entries of the consumer with an
 // identifier greater than the given one are returned.
 func (s *Store) StreamGroupRead(key []byte, group, consumer string, mode StreamReadMode, id StreamID, count int, noack bool) (StreamDelivery, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return StreamDelivery{}, ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return StreamDelivery{}, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -561,16 +567,17 @@ func (s *Store) StreamRead(key []byte, id StreamID, count int) ([]StreamEntry, b
 // key and returns the number of acknowledged entries. A missing key or group
 // acknowledges nothing.
 func (s *Store) StreamAck(key []byte, group string, ids []StreamID) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return 0, nil
 	}
 	if e.Type != TypeStream {
 		return 0, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	cg := e.Stream.groups[group]
@@ -589,16 +596,17 @@ func (s *Store) StreamAck(key []byte, group string, ids []StreamID) (int, error)
 // StreamClaim claims the pending entries of the consumer group of the stream
 // under key for the given consumer.
 func (s *Store) StreamClaim(key []byte, group, consumer string, minIdle time.Duration, ids []StreamID, opts StreamClaimOptions) (StreamClaimResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return StreamClaimResult{}, ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return StreamClaimResult{}, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
@@ -691,16 +699,17 @@ func (s *Store) StreamClaim(key []byte, group, consumer string, minIdle time.Dur
 // stream under key that have been idle for at least minIdle, starting from
 // the given identifier.
 func (s *Store) StreamAutoClaim(key []byte, group, consumer string, minIdle time.Duration, start StreamID, count int, justID bool) (StreamAutoClaimResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entryLocked(key)
+	sh := s.shardOf(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		return StreamAutoClaimResult{}, ErrStreamNotFound
 	}
 	if e.Type != TypeStream {
 		return StreamAutoClaimResult{}, ErrWrongType
 	}
-	s.touchKeyLocked(key)
+	s.touchKeyLocked(sh, key)
 	s.markAccess(e)
 
 	st := e.Stream
