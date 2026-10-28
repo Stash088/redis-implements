@@ -146,3 +146,31 @@ func TestParseBadMemoryFlags(t *testing.T) {
 		t.Error("expected error for zero maxmemory-samples")
 	}
 }
+
+// TestParseEmptySave checks that an empty --save disables the snapshots,
+// like in Redis: `redis-server --save ""`.
+func TestParseEmptySave(t *testing.T) {
+	c, err := Parse([]string{"--save", ""})
+	if err != nil {
+		t.Fatalf("--save \"\": %v", err)
+	}
+	if c.SaveSeconds != 0 {
+		t.Errorf("the save policy is %d seconds, want 0", c.SaveSeconds)
+	}
+}
+
+// TestParseBadFlagDoesNotPanic checks that a wrong value of a flag is
+// reported as an error: the flag package prints the usage, and the usage
+// calls the String method of every flag.
+func TestParseBadFlagDoesNotPanic(t *testing.T) {
+	for _, args := range [][]string{
+		{"--save", "abc"},
+		{"--maxmemory", "zzz"},
+		{"--port", "99999"},
+		{"--maxmemory-policy", "nonsense"},
+	} {
+		if _, err := Parse(args); err == nil {
+			t.Errorf("%v: expected an error", args)
+		}
+	}
+}

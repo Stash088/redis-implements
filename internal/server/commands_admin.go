@@ -139,11 +139,17 @@ func cmdConfig(ctx *Ctx) error {
 	}
 	switch strings.ToLower(string(ctx.Args[1])) {
 	case "get":
-		if len(ctx.Args) != 3 {
+		if len(ctx.Args) < 3 {
 			wrongArgs(ctx.W, "config get")
 			return nil
 		}
-		return configGet(ctx, string(ctx.Args[2]))
+		// Redis accepts several patterns: the parameters matching any of
+		// them are returned.
+		patterns := make([]string, 0, len(ctx.Args)-2)
+		for _, p := range ctx.Args[2:] {
+			patterns = append(patterns, string(p))
+		}
+		return configGet(ctx, patterns)
 	case "set":
 		return configSet(ctx, ctx.Args[2:])
 	default:
@@ -187,12 +193,15 @@ func (s *Server) savePolicyString() string {
 	return strconv.Itoa(s.saveSeconds) + " " + strconv.Itoa(s.saveChanges)
 }
 
-func configGet(ctx *Ctx, pattern string) error {
+func configGet(ctx *Ctx, patterns []string) error {
 	params := ctx.Srv.configParams()
 	var out [][2]string
 	for _, p := range params {
-		if globMatch(pattern, p[0]) {
-			out = append(out, p)
+		for _, pattern := range patterns {
+			if globMatch(pattern, p[0]) {
+				out = append(out, p)
+				break
+			}
 		}
 	}
 	w := ctx.W
