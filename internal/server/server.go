@@ -6,11 +6,13 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/amir/redis-implements/internal/netloop"
 	"github.com/amir/redis-implements/internal/persist"
 	"github.com/amir/redis-implements/internal/resp"
 	"github.com/amir/redis-implements/internal/store"
@@ -118,6 +120,13 @@ type Server struct {
 	clients  map[net.Conn]*client
 	started  time.Time
 	connsNum int64
+
+	// loopMode is set when the server serves the connections with an event
+	// loop instead of a goroutine each. loopAddr is the address it listens
+	// on and loopFD the descriptor of the listener.
+	loopMode bool
+	loopAddr string
+	loopFD   int
 }
 
 // cacheLineSize is the size of a cache line on the usual architectures. A
@@ -242,6 +251,12 @@ func New(addr string, dbs []*store.Store) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newServer(dbs, ln), nil
+}
+
+// newServer creates a server around the given listener. The listener is nil
+// in the event loop mode: there the connections are served by the loop.
+func newServer(dbs []*store.Store, ln net.Listener) *Server {
 	if len(dbs) == 0 {
 		dbs = []*store.Store{store.New()}
 	}
@@ -262,7 +277,7 @@ func New(addr string, dbs []*store.Store) (*Server, error) {
 	s.waiters = newWaiters()
 	s.sl = newSlowlog(10000, 128)
 	s.registerCommands()
-	return s, nil
+	return s
 }
 
 // SetSlowlog configures the slow log threshold (microseconds) and capacity.
@@ -318,8 +333,31 @@ func (s *Server) maxMemoryPolicyName() string {
 	return "noeviction"
 }
 
+// port returns the port the server listens on.
+func (s *Server) port() int {
+	if s.loopMode {
+		if _, p, err := net.SplitHostPort(s.loopAddr); err == nil {
+			n, _ := strconv.Atoi(p)
+			return n
+		}
+		return 0
+	}
+	return portOf(s.ln.Addr())
+}
+
 // Addr returns the bound listener address (useful with port 0).
-func (s *Server) Addr() net.Addr { return s.ln.Addr() }
+func (s *Server) Addr() net.Addr {
+	if s.loopMode {
+		return loopAddr(s.loopAddr)
+	}
+	return s.ln.Addr()
+}
+
+// loopAddr is the address of the event loop mode.
+type loopAddr string
+
+func (a loopAddr) Network() string { return "tcp" }
+func (a loopAddr) String() string  { return string(a) }
 
 // DB returns the store of the database with the given index. Out-of-range
 // indexes fall back to the first database.
@@ -363,7 +401,14 @@ func (s *Server) Close() error {
 		s.AOF.Close()
 		s.AOF = nil
 	}
-	err := s.ln.Close()
+	var err error
+	if s.ln != nil {
+		err = s.ln.Close()
+	}
+	if s.loopMode && s.loopFD > 0 {
+		netloop.Close(s.loopFD)
+		s.loopFD = 0
+	}
 	s.mu.Lock()
 	for c := range s.conns {
 		c.Close()
@@ -373,8 +418,35 @@ func (s *Server) Close() error {
 	return err
 }
 
+// NewLoop creates a Server that serves the connections with an event loop
+// instead of a goroutine each. The commands are executed by the same code as
+// the goroutine model; the difference is the I/O.
+//
+// The event loop does not serve the commands that need a goroutine of their
+// own yet (the blocking ones and the subscriptions): they answer with an
+// error.
+func NewLoop(addr string, dbs []*store.Store) (*Server, error) {
+	fd, err := netloop.Listen(addr)
+	if err != nil {
+		return nil, err
+	}
+	bound, err := netloop.Addr(fd)
+	if err != nil {
+		netloop.Close(fd)
+		return nil, err
+	}
+	s := newServer(dbs, nil)
+	s.loopMode = true
+	s.loopAddr = bound
+	s.loopFD = fd
+	return s, nil
+}
+
 // Serve accepts connections until the listener is closed.
 func (s *Server) Serve() error {
+	if s.loopMode {
+		return s.serveLoop()
+	}
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {

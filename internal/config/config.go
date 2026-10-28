@@ -49,6 +49,11 @@ type Config struct {
 	// a connection, in bytes. Zero means the default.
 	BufReadSize  int
 	BufWriteSize int
+
+	// IOMode is the model of the input and output: "goroutine" serves a
+	// connection with a goroutine each, "loop" serves them with one event
+	// loop.
+	IOMode string
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -142,6 +147,7 @@ func Parse(args []string) (Config, error) {
 		SlowlogSlowerThan: 10000,
 		SlowlogMaxLen:     128,
 		Databases:         16,
+		IOMode:            "goroutine",
 	}
 	fs.StringVar(&c.Host, "host", c.Host, "interface to bind to")
 	fs.IntVar(&c.Port, "port", c.Port, "TCP port to listen on")
@@ -163,6 +169,7 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&c.AOFFlushMS, "aof-flush-interval", c.AOFFlushMS, "how often the buffered AOF commands are written to the file, in milliseconds (0 writes them at once)")
 	fs.IntVar(&c.BufReadSize, "buf-read-size", c.BufReadSize, "size of the socket read buffer of a connection, in bytes (0 uses the default)")
 	fs.IntVar(&c.BufWriteSize, "buf-write-size", c.BufWriteSize, "size of the socket write buffer of a connection, in bytes (0 uses the default)")
+	fs.StringVar(&c.IOMode, "io-mode", c.IOMode, "model of the input and output: goroutine (a goroutine per connection) or loop (one event loop)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -180,6 +187,11 @@ func Parse(args []string) (Config, error) {
 	}
 	if c.SaveSeconds < 0 || c.SaveChanges < 0 {
 		return Config{}, fmt.Errorf("invalid save policy %d/%d", c.SaveSeconds, c.SaveChanges)
+	}
+	switch c.IOMode {
+	case "goroutine", "loop":
+	default:
+		return Config{}, fmt.Errorf("invalid --io-mode %q (want goroutine or loop)", c.IOMode)
 	}
 	switch c.MaxMemoryPolicy {
 	case "noeviction", "allkeys-lru", "volatile-lru", "allkeys-random", "volatile-random", "volatile-ttl":

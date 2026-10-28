@@ -71,7 +71,12 @@ func main() {
 	exp := store.NewExpirer(dbs, 0)
 	exp.Start()
 
-	srv, err := server.New(cfg.Addr(), dbs)
+	var srv *server.Server
+	if cfg.IOMode == "loop" {
+		srv, err = server.NewLoop(cfg.Addr(), dbs)
+	} else {
+		srv, err = server.New(cfg.Addr(), dbs)
+	}
 	if err != nil {
 		log.Fatalf("server: failed to listen on %s: %v", cfg.Addr(), err)
 	}

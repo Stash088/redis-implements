@@ -544,7 +544,7 @@ func cmdInfo(ctx *Ctx) error {
 	fmt.Fprintf(&b, "redis_version:1.0.0\r\n")
 	fmt.Fprintf(&b, "redis_mode:standalone\r\n")
 	fmt.Fprintf(&b, "os:%s\r\n", runtime.GOOS)
-	fmt.Fprintf(&b, "tcp_port:%d\r\n", portOf(s.ln.Addr()))
+	fmt.Fprintf(&b, "tcp_port:%d\r\n", s.port())
 	fmt.Fprintf(&b, "uptime_in_seconds:%d\r\n", int64(time.Since(s.started).Seconds()))
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Clients\r\n")
