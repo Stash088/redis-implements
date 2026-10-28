@@ -35,6 +35,13 @@ func blockingListPop(ctx *Ctx, cmd string, kind popKind) error {
 			return writeWrongType(ctx.W)
 		}
 		if ok {
+			// The journal holds the effect of the command, not the command
+			// itself: the replay must not wait for a key.
+			if left {
+				ctx.propagate([][]byte{[]byte("LPOP"), key})
+			} else {
+				ctx.propagate([][]byte{[]byte("RPOP"), key})
+			}
 			// BLPOP and BRPOP answer with the key and the value.
 			if err := ctx.W.WriteArrayHeader(2); err != nil {
 				return err
@@ -76,7 +83,9 @@ func cmdBLMove(ctx *Ctx) error {
 			return writeWrongType(ctx.W)
 		}
 		if moved {
-			ctx.propagateCmd()
+			// The journal holds the effect of the command: the replay
+			// must not wait for a key.
+			ctx.propagate([][]byte{[]byte("LMOVE"), source, dest, ctx.Args[3], ctx.Args[4]})
 			return ctx.W.WriteBulkString(v)
 		}
 		ctx.wait = &waitRequest{keys: [][]byte{source}, kind: popLeft, timeout: timeout, dest: dest}
@@ -112,7 +121,13 @@ func blockingZPop(ctx *Ctx, cmd string, kind popKind) error {
 			return writeWrongType(ctx.W)
 		}
 		if ok {
-			ctx.propagateCmd()
+			// The journal holds the effect of the command, not the command
+			// itself: the replay must not wait for a key.
+			if kind == popZMin {
+				ctx.propagate([][]byte{[]byte("ZPOPMIN"), key})
+			} else {
+				ctx.propagate([][]byte{[]byte("ZPOPMAX"), key})
+			}
 			// BZPOPMIN and BZPOPMAX answer with the key, the member and
 			// its score.
 			if err := ctx.W.WriteArrayHeader(3); err != nil {

@@ -378,6 +378,69 @@ func TestLoopModeParity(t *testing.T) {
 	}
 }
 
+// TestLoopModeBlockingStream checks that XREAD BLOCK waits for a new entry of
+// a stream without holding the loop.
+func TestLoopModeBlockingStream(t *testing.T) {
+	addr := startTestServerLoop(t)
+	reader := newClient(t, addr)
+	writer := newClient(t, addr)
+
+	reader.send("XREAD", "BLOCK", "5000", "STREAMS", "s", "0")
+	// The loop goes on with the other connections.
+	if v := writer.cmd("PING"); v.Kind != resp.KindSimpleString {
+		t.Fatalf("PING while a reader waits: got %+v", v)
+	}
+
+	if v := writer.cmd("XADD", "s", "1-1", "f", "v"); v.Kind != resp.KindBulkString {
+		t.Fatalf("XADD: got %+v", v)
+	}
+	v := readValue(t, reader)
+	if v.Kind != resp.KindArray || len(v.Array) != 1 {
+		t.Fatalf("XREAD: got %+v, want an array with the stream", v)
+	}
+	stream := v.Array[0]
+	if stream.Kind != resp.KindArray || len(stream.Array) != 2 || string(stream.Array[0].Str) != "s" {
+		t.Fatalf("XREAD: got %+v, want the pair [s entries]", stream)
+	}
+}
+
+// TestLoopModeBlockingSeveralWaiters checks that several blocked clients are
+// served when the keys become available.
+func TestLoopModeBlockingSeveralWaiters(t *testing.T) {
+	addr := startTestServerLoop(t)
+	pusher := newClient(t, addr)
+
+	results := make(chan []byte, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			c := newClient(t, addr)
+			c.send("BLPOP", "l", "5")
+			v := readValue(t, c)
+			if v.Kind == resp.KindArray && len(v.Array) == 2 {
+				results <- v.Array[1].Str
+				return
+			}
+			results <- nil
+		}()
+	}
+	time.Sleep(200 * time.Millisecond)
+	pusher.intWant("RPUSH", "l", "v1")
+	pusher.intWant("RPUSH", "l", "v2")
+
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case v := <-results:
+			seen[string(v)] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("a blocked client was not woken up")
+		}
+	}
+	if !seen["v1"] || !seen["v2"] {
+		t.Errorf("the blocked clients got %v, want v1 and v2", seen)
+	}
+}
+
 // readValue reads the next answer of a client.
 func readValue(t *testing.T, c *client) resp.Value {
 	t.Helper()
