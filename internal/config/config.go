@@ -50,9 +50,9 @@ type Config struct {
 	BufReadSize  int
 	BufWriteSize int
 
-	// IOMode is the model of the input and output: "goroutine" serves a
-	// connection with a goroutine each, "loop" serves them with one event
-	// loop.
+	// IOMode is the model of the input and output: "loop" serves the
+	// connections with one event loop, "goroutine" serves every connection
+	// with a goroutine of its own.
 	IOMode string
 }
 
@@ -147,7 +147,7 @@ func Parse(args []string) (Config, error) {
 		SlowlogSlowerThan: 10000,
 		SlowlogMaxLen:     128,
 		Databases:         16,
-		IOMode:            "goroutine",
+		IOMode:            "loop",
 	}
 	fs.StringVar(&c.Host, "host", c.Host, "interface to bind to")
 	fs.IntVar(&c.Port, "port", c.Port, "TCP port to listen on")
@@ -169,7 +169,7 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&c.AOFFlushMS, "aof-flush-interval", c.AOFFlushMS, "how often the buffered AOF commands are written to the file, in milliseconds (0 writes them at once)")
 	fs.IntVar(&c.BufReadSize, "buf-read-size", c.BufReadSize, "size of the socket read buffer of a connection, in bytes (0 uses the default)")
 	fs.IntVar(&c.BufWriteSize, "buf-write-size", c.BufWriteSize, "size of the socket write buffer of a connection, in bytes (0 uses the default)")
-	fs.StringVar(&c.IOMode, "io-mode", c.IOMode, "model of the input and output: goroutine (a goroutine per connection) or loop (one event loop)")
+	fs.StringVar(&c.IOMode, "io-mode", c.IOMode, "model of the input and output: loop (one event loop) or goroutine (a goroutine per connection)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
