@@ -561,7 +561,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		s.countConn(-1)
 		s.PubSub.removeClient(c)
 		c.unwatchAll(s.DB(c.db))
-		close(c.done)
+		c.closeDone()
 		conn.Close()
 		s.Logger.Printf("server: client disconnected: %s", conn.RemoteAddr())
 	}()

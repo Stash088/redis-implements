@@ -551,6 +551,7 @@ func cmdInfo(ctx *Ctx) error {
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Clients\r\n")
 	fmt.Fprintf(&b, "connected_clients:%d\r\n", s.connectedClients())
+	fmt.Fprintf(&b, "blocked_clients:%d\r\n", s.waiters.count())
 	subCh, subPat := s.PubSub.Counts()
 	fmt.Fprintf(&b, "pubsub_channels:%d\r\n", subCh)
 	fmt.Fprintf(&b, "pubsub_patterns:%d\r\n", subPat)

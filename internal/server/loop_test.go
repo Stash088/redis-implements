@@ -424,6 +424,7 @@ func TestLoopModeBlockingSeveralWaiters(t *testing.T) {
 		}()
 	}
 	time.Sleep(200 * time.Millisecond)
+	waitBlocked(t, pusher, 2)
 	pusher.intWant("RPUSH", "l", "v1")
 	pusher.intWant("RPUSH", "l", "v2")
 
@@ -438,6 +439,62 @@ func TestLoopModeBlockingSeveralWaiters(t *testing.T) {
 	}
 	if !seen["v1"] || !seen["v2"] {
 		t.Errorf("the blocked clients got %v, want v1 and v2", seen)
+	}
+}
+
+// TestClientUnblock checks that CLIENT UNBLOCK releases a client that waits
+// for a key: the client is answered with an error instead of the result of
+// the command. The check runs in both models of the input and output.
+func TestClientUnblock(t *testing.T) {
+	for _, mode := range []struct {
+		name  string
+		start func(t *testing.T) string
+	}{
+		{"goroutine", startTestServer},
+		{"loop", startTestServerLoop},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			addr := mode.start(t)
+			blocked := newClient(t, addr)
+			other := newClient(t, addr)
+
+			id := blocked.intWant("CLIENT", "ID")
+			blocked.send("BLPOP", "l", "0")
+			// The client waits: the other connection is served.
+			if v := other.cmd("PING"); v.Kind != resp.KindSimpleString {
+				t.Fatalf("PING while a client waits: got %+v", v)
+			}
+			// The client must be waiting before it is unblocked.
+			waitBlocked(t, other, 1)
+			if n := other.intWant("CLIENT", "UNBLOCK", "ID", fmt.Sprint(id)); n != 1 {
+				t.Fatalf("CLIENT UNBLOCK: got %d, want 1", n)
+			}
+			v := readValue(t, blocked)
+			if v.Kind != resp.KindError || !strings.Contains(string(v.Str), "UNBLOCKED") {
+				t.Errorf("the unblocked client: got %+v, want the UNBLOCKED error", v)
+			}
+			// A client that does not wait is not unblocked.
+			if n := other.intWant("CLIENT", "UNBLOCK", "ID", fmt.Sprint(id)); n != 0 {
+				t.Errorf("CLIENT UNBLOCK of a free client: got %d, want 0", n)
+			}
+		})
+	}
+}
+
+// waitBlocked waits until the server reports the given number of blocked
+// clients.
+func waitBlocked(t *testing.T, c *client, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info := string(c.bulkWant("INFO", "clients"))
+		if strings.Contains(info, fmt.Sprintf("blocked_clients:%d", n)) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server does not report %d blocked clients: %s", n, info)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
