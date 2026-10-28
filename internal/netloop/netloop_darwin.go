@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // kqueuePoller waits for the readiness of the descriptors with kqueue.
@@ -17,6 +18,8 @@ import (
 // goroutine model pays an extra read syscall per request.
 type kqueuePoller struct {
 	fd int
+	// wake wakes the poller from another goroutine.
+	wake *wakeup
 }
 
 // NewPoller returns a poller over kqueue.
@@ -25,7 +28,29 @@ func NewPoller() (Poller, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &kqueuePoller{fd: fd}, nil
+	w, err := newWakeup()
+	if err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	p := &kqueuePoller{fd: fd, wake: w}
+	if err := p.AddRead(w.read); err != nil {
+		p.Close()
+		return nil, err
+	}
+	return p, nil
+}
+
+// Close releases the poller.
+func (p *kqueuePoller) Close() error {
+	p.wake.close()
+	return syscall.Close(p.fd)
+}
+
+// Notify wakes a poller that waits.
+func (p *kqueuePoller) Notify() error {
+	p.wake.notify()
+	return nil
 }
 
 func (p *kqueuePoller) AddRead(fd int) error {
@@ -50,10 +75,10 @@ func (p *kqueuePoller) change(fd int, filter int16, flags uint16) error {
 	return err
 }
 
-func (p *kqueuePoller) Wait() ([]Event, error) {
+func (p *kqueuePoller) Wait(timeout time.Duration) ([]Event, error) {
 	events := make([]syscall.Kevent_t, 64)
 	for {
-		n, err := syscall.Kevent(p.fd, nil, events, nil)
+		n, err := syscall.Kevent(p.fd, nil, events, waitTimespec(timeout))
 		if err != nil {
 			if err == syscall.EINTR {
 				continue
@@ -70,10 +95,27 @@ func (p *kqueuePoller) Wait() ([]Event, error) {
 			case syscall.EVFILT_WRITE:
 				ev.Writable = true
 			}
+			if ev.FD == p.wake.read {
+				// The notification is not a socket event: the poller
+				// reads it and reports it as a wakeup.
+				p.wake.drain()
+				ev.Readable = false
+				ev.Wakeup = true
+			}
 			out = append(out, ev)
 		}
 		return out, nil
 	}
+}
+
+// waitTimespec converts a timeout into the timespec of kevent. A negative
+// timeout means "wait forever" (no timespec at all).
+func waitTimespec(timeout time.Duration) *syscall.Timespec {
+	if timeout < 0 {
+		return nil
+	}
+	ts := syscall.NsecToTimespec(timeout.Nanoseconds())
+	return &ts
 }
 
 // listen creates a listening TCP socket in the non-blocking mode.

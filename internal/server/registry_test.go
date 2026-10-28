@@ -90,12 +90,17 @@ func TestCommandRegistryMemoryAddSet(t *testing.T) {
 // to the AOF are exactly those whose handler writes the command to the
 // journal: a command written by both the handler and the dispatcher would be
 // applied twice on the replay.
+//
+// The blocking commands belong here as well: their handler writes the effect
+// of the pop (LPOP, RPOP, LMOVE, ZPOPMIN) instead of the command itself, so
+// the replay does not wait for a key.
 func TestCommandRegistryAofSelf(t *testing.T) {
 	cmds := newTestRegistry()
 	want := map[string]bool{
 		"set": true, "expire": true, "pexpire": true, "xadd": true, "xreadgroup": true,
 		"getdel": true, "getset": true, "mset": true, "msetnx": true,
 		"psetex": true, "setex": true, "setnx": true, "setrange": true,
+		"blpop": true, "brpop": true, "blmove": true, "bzpopmin": true, "bzpopmax": true,
 	}
 	for name, spec := range cmds {
 		if spec.aofSelf != want[name] {

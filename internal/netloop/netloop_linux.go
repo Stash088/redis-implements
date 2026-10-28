@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // epollPoller waits for the readiness of the descriptors with epoll.
@@ -17,6 +18,8 @@ import (
 // goroutine model pays an extra read syscall per request.
 type epollPoller struct {
 	fd int
+	// wake wakes the poller from another goroutine.
+	wake *wakeup
 }
 
 // NewPoller returns a poller over epoll.
@@ -25,7 +28,29 @@ func NewPoller() (Poller, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &epollPoller{fd: fd}, nil
+	w, err := newWakeup()
+	if err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	p := &epollPoller{fd: fd, wake: w}
+	if err := p.AddRead(w.read); err != nil {
+		p.Close()
+		return nil, err
+	}
+	return p, nil
+}
+
+// Close releases the poller.
+func (p *epollPoller) Close() error {
+	p.wake.close()
+	return syscall.Close(p.fd)
+}
+
+// Notify wakes a poller that waits.
+func (p *epollPoller) Notify() error {
+	p.wake.notify()
+	return nil
 }
 
 func (p *epollPoller) AddRead(fd int) error {
@@ -48,10 +73,10 @@ func (p *epollPoller) change(fd int, events uint32, op int) error {
 	return syscall.EpollCtl(p.fd, op, fd, &syscall.EpollEvent{Events: events, Fd: int32(fd)})
 }
 
-func (p *epollPoller) Wait() ([]Event, error) {
+func (p *epollPoller) Wait(timeout time.Duration) ([]Event, error) {
 	events := make([]syscall.EpollEvent, 64)
 	for {
-		n, err := syscall.EpollWait(p.fd, events, -1)
+		n, err := syscall.EpollWait(p.fd, events, waitMillis(timeout))
 		if err != nil {
 			if err == syscall.EINTR {
 				continue
@@ -67,6 +92,13 @@ func (p *epollPoller) Wait() ([]Event, error) {
 			}
 			if e.Events&syscall.EPOLLOUT != 0 {
 				ev.Writable = true
+			}
+			if ev.FD == p.wake.read {
+				// The notification is not a socket event: the poller
+				// reads it and reports it as a wakeup.
+				p.wake.drain()
+				ev.Readable = false
+				ev.Wakeup = true
 			}
 			out = append(out, ev)
 		}

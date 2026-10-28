@@ -179,11 +179,13 @@ func (s *Server) registerCommands() {
 	s.regWG("INCRBYFLOAT", 3, cmdIncrByFloat)
 
 	// Blocking commands.
-	s.regW("BLPOP", -3, cmdBLPop)
-	s.regW("BRPOP", -3, cmdBRPop)
-	s.regW("BLMOVE", 6, cmdBLMove)
-	s.regW("BZPOPMIN", -3, cmdBZPopMin)
-	s.regW("BZPOPMAX", -3, cmdBZPopMax)
+	// The blocking commands write the effect of the pop to the journal
+	// themselves: the replay must not wait for a key.
+	s.regWS("BLPOP", -3, cmdBLPop)
+	s.regWS("BRPOP", -3, cmdBRPop)
+	s.regWS("BLMOVE", 6, cmdBLMove)
+	s.regWS("BZPOPMIN", -3, cmdBZPopMin)
+	s.regWS("BZPOPMAX", -3, cmdBZPopMax)
 
 	// Key management commands.
 	s.regW("RENAME", 3, cmdRename)
@@ -549,6 +551,7 @@ func cmdInfo(ctx *Ctx) error {
 	b.WriteString("\r\n")
 	fmt.Fprintf(&b, "# Clients\r\n")
 	fmt.Fprintf(&b, "connected_clients:%d\r\n", s.connectedClients())
+	fmt.Fprintf(&b, "blocked_clients:%d\r\n", s.waiters.count())
 	subCh, subPat := s.PubSub.Counts()
 	fmt.Fprintf(&b, "pubsub_channels:%d\r\n", subCh)
 	fmt.Fprintf(&b, "pubsub_patterns:%d\r\n", subPat)

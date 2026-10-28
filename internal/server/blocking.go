@@ -1,10 +1,15 @@
 package server
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// errUnblocked is the answer of a client that was unblocked with
+// CLIENT UNBLOCK.
+var errUnblocked = errors.New("ERR UNBLOCKED client unblocked via CLIENT UNBLOCK")
 
 // popKind tells the blocking commands which side of the collection to pop
 // from.
@@ -30,16 +35,48 @@ type waiter struct {
 	kind popKind
 	// dest is the destination key of a blocking move (BLMOVE).
 	dest []byte
-	// ready is closed when one of the keys may have become available.
+	// ready is closed when one of the keys may have become available. It
+	// is used by the goroutine model: there a goroutine waits on it. The
+	// event loop runs the command again itself.
 	ready chan struct{}
-	// done is closed when the waiter gives up (timeout or disconnect).
-	done chan struct{}
-	once sync.Once
+	done  chan struct{}
+	once  sync.Once
+	// loop is set when the client is served by the event loop.
+	loop *loopConn
+	// errMu guards err.
+	errMu sync.Mutex
+	// err is the error the client is answered with when it is unblocked
+	// with CLIENT UNBLOCK.
+	err error
 }
 
 // wake signals the waiter that one of its keys may be available.
 func (w *waiter) wake() {
+	if w.loop != nil {
+		// The event loop retries the command itself: the connection is
+		// marked as ready to run it again.
+		w.loop.wakeup()
+		return
+	}
 	w.once.Do(func() { close(w.ready) })
+}
+
+// unblock releases the waiter with an error: the client is answered with it
+// instead of the result of the command.
+func (w *waiter) unblock(err error) {
+	w.errMu.Lock()
+	w.err = err
+	w.errMu.Unlock()
+	w.wake()
+}
+
+// takeError returns the error of the unblocking, if there was one.
+func (w *waiter) takeError() error {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+	err := w.err
+	w.err = nil
+	return err
 }
 
 // giveUp releases the waiter.
@@ -141,6 +178,31 @@ func (w *waiters) count() int {
 	return n
 }
 
+// unblock releases the client that waits: it is answered with an error
+// instead of the result of the command. The client is found by its id or by
+// its address.
+func (w *waiters) unblock(id uint64, addr string) bool {
+	w.mu.Lock()
+	var found *waiter
+	for _, list := range w.byKey {
+		for _, wt := range list {
+			if (id != 0 && wt.c.id == id) || (addr != "" && wt.c.addr == addr) {
+				found = wt
+				break
+			}
+		}
+		if found != nil {
+			break
+		}
+	}
+	w.mu.Unlock()
+	if found == nil {
+		return false
+	}
+	found.unblock(errUnblocked)
+	return true
+}
+
 // waitRequest describes a command that has to wait for a key to become
 // available.
 type waitRequest struct {
@@ -153,8 +215,9 @@ type waitRequest struct {
 
 // waitForKeys registers the client as a waiter and waits until one of the keys
 // may have become available, the timeout expires or the connection is gone.
-// It returns false when the wait timed out.
-func (s *Server) waitForKeys(c *client, req *waitRequest) bool {
+// It returns false when the wait timed out, and the error when the client was
+// unblocked with CLIENT UNBLOCK.
+func (s *Server) waitForKeys(c *client, req *waitRequest) (bool, error) {
 	wt := &waiter{
 		c:     c,
 		keys:  req.keys,
@@ -175,10 +238,10 @@ func (s *Server) waitForKeys(c *client, req *waitRequest) bool {
 	}
 	select {
 	case <-wt.ready:
-		return true
+		return true, wt.takeError()
 	case <-timeout:
-		return false
+		return false, nil
 	case <-c.done:
-		return false
+		return false, nil
 	}
 }

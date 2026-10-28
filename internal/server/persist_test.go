@@ -189,6 +189,44 @@ func TestPersistenceAOFReload(t *testing.T) {
 	verifySampleData(t, addr2)
 }
 
+// TestPersistenceBlockingPopAOFReload checks that the journal holds the
+// effect of a blocking pop and not the command itself: the replay must not
+// wait for a key, and the popped element must not come back.
+func TestPersistenceBlockingPopAOFReload(t *testing.T) {
+	dir := t.TempDir()
+	addr, _, aofPath := startPersistServer(t, dir, true)
+	c := newClient(t, addr)
+	c.intWant("RPUSH", "l", "a", "b")
+	arr := c.arrWant("BLPOP", "l", "0")
+	if len(arr) != 2 || string(arr[1].Str) != "a" {
+		t.Fatalf("BLPOP: got %+v, want [l a]", arr)
+	}
+	c.intWant("RPUSH", "src", "m")
+	if v := c.bulkWant("BLMOVE", "src", "dst", "LEFT", "RIGHT", "0"); string(v) != "m" {
+		t.Fatalf("BLMOVE: got %q, want m", v)
+	}
+	c.intWant("ZADD", "z", "1", "m1")
+	arr = c.arrWant("BZPOPMIN", "z", "0")
+	if len(arr) != 3 || string(arr[1].Str) != "m1" {
+		t.Fatalf("BZPOPMIN: got %+v, want [z m1 1]", arr)
+	}
+	// Let the file settle, then reload from it.
+	time.Sleep(20 * time.Millisecond)
+
+	addr2 := startFromFiles(t, aofPath, true)
+	c2 := newClient(t, addr2)
+	list := c2.arrWant("LRANGE", "l", "0", "-1")
+	if len(list) != 1 || string(list[0].Str) != "b" {
+		t.Errorf("the list after the reload: got %+v, want [b]", list)
+	}
+	if n := c2.intWant("LLEN", "dst"); n != 1 {
+		t.Errorf("the destination list after the reload: got %d elements, want 1", n)
+	}
+	if n := c2.intWant("ZCARD", "z"); n != 0 {
+		t.Errorf("the sorted set after the reload: got %d elements, want 0", n)
+	}
+}
+
 func TestPersistenceStreamAOFReload(t *testing.T) {
 	dir := t.TempDir()
 	addr, _, aofPath := startPersistServer(t, dir, true)

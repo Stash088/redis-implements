@@ -14,6 +14,7 @@ import (
 	"net"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // Event is one readiness event of the poller.
@@ -24,6 +25,9 @@ type Event struct {
 	Readable bool
 	// Writable is set when the descriptor is ready to accept the data.
 	Writable bool
+	// Wakeup is set when the poller was notified: the event came from
+	// another goroutine, not from a socket.
+	Wakeup bool
 }
 
 // Poller waits for the readiness of the descriptors.
@@ -36,9 +40,16 @@ type Poller interface {
 	AddWrite(fd int) error
 	// DelWrite stops watching the descriptor for writing.
 	DelWrite(fd int) error
-	// Wait blocks until a descriptor is ready. It returns the events of the
-	// ready descriptors.
-	Wait() ([]Event, error)
+	// Wait blocks until a descriptor is ready or the timeout expires. A
+	// negative timeout waits forever, a zero one returns at once. The
+	// events of the ready descriptors are returned.
+	Wait(timeout time.Duration) ([]Event, error)
+	// Notify wakes a poller that waits: the wait returns an event with the
+	// Wakeup flag. It is used for the events that come from another
+	// goroutine (a message of a subscriber, an unblocked client).
+	Notify() error
+	// Close releases the poller.
+	Close() error
 }
 
 // Listen creates a listening TCP socket in the non-blocking mode.
@@ -88,4 +99,35 @@ func Addr(fd int) (string, error) {
 	default:
 		return "", errors.New("netloop: unknown socket address")
 	}
+}
+
+// PeerAddr returns the address of the other end of the socket.
+func PeerAddr(fd int) (string, error) {
+	sa, err := syscall.Getpeername(fd)
+	if err != nil {
+		return "", err
+	}
+	switch a := sa.(type) {
+	case *syscall.SockaddrInet4:
+		return net.JoinHostPort(net.IP(a.Addr[:]).String(), strconv.Itoa(a.Port)), nil
+	case *syscall.SockaddrInet6:
+		return net.JoinHostPort(net.IP(a.Addr[:]).String(), strconv.Itoa(a.Port)), nil
+	default:
+		return "", errors.New("netloop: unknown socket address")
+	}
+}
+
+// waitMillis converts a timeout into the number of milliseconds the poller
+// waits for. A negative timeout means "wait forever", a timeout that is
+// shorter than a millisecond is rounded up, so the poller does not return
+// before the deadline.
+func waitMillis(timeout time.Duration) int {
+	if timeout < 0 {
+		return -1
+	}
+	ms := timeout.Milliseconds()
+	if timeout > 0 && ms == 0 {
+		ms = 1
+	}
+	return int(ms)
 }

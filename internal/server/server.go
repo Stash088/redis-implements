@@ -121,6 +121,15 @@ type Server struct {
 	started  time.Time
 	connsNum int64
 
+	// loopClients are the clients served by the event loop. The clients of
+	// the goroutine model are in s.clients: they are keyed by the
+	// connection, and a client of the event loop has no socket.
+	loopClients map[*client]struct{}
+
+	// loop is the state of the event loop: it is set when the loop starts
+	// and it is used to stop the loop when the server is closed.
+	loop *loopState
+
 	// loopMode is set when the server serves the connections with an event
 	// loop instead of a goroutine each. loopAddr is the address it listens
 	// on and loopFD the descriptor of the listener.
@@ -261,15 +270,16 @@ func newServer(dbs []*store.Store, ln net.Listener) *Server {
 		dbs = []*store.Store{store.New()}
 	}
 	s := &Server{
-		dbs:       dbs,
-		Logger:    log.Default(),
-		cmds:      make(map[string]cmdSpec),
-		cmdsUpper: make(map[string]cmdSpec),
-		conns:     make(map[net.Conn]struct{}),
-		clients:   make(map[net.Conn]*client),
-		PubSub:    NewPubSub(),
-		ln:        ln,
-		started:   time.Now(),
+		dbs:         dbs,
+		Logger:      log.Default(),
+		cmds:        make(map[string]cmdSpec),
+		cmdsUpper:   make(map[string]cmdSpec),
+		conns:       make(map[net.Conn]struct{}),
+		clients:     make(map[net.Conn]*client),
+		loopClients: make(map[*client]struct{}),
+		PubSub:      NewPubSub(),
+		ln:          ln,
+		started:     time.Now(),
 	}
 	def := "noeviction"
 	s.maxMemoryPolicy.Store(&def)
@@ -405,9 +415,19 @@ func (s *Server) Close() error {
 	if s.ln != nil {
 		err = s.ln.Close()
 	}
-	if s.loopMode && s.loopFD > 0 {
-		netloop.Close(s.loopFD)
-		s.loopFD = 0
+	if s.loopMode {
+		// The listener is closed by the loop: it closes it when it leaves.
+		// Closing it here would leave the loop with a dead descriptor.
+		if l := s.loopState(); l != nil {
+			l.stop()
+		} else {
+			s.closeLoopFD()
+		}
+	}
+	// The loop waits for the readiness of the sockets: it is woken, so it
+	// leaves and closes its connections.
+	if l := s.loopState(); l != nil {
+		l.stop()
 	}
 	s.mu.Lock()
 	for c := range s.conns {
@@ -416,6 +436,73 @@ func (s *Server) Close() error {
 	s.conns = make(map[net.Conn]struct{})
 	s.mu.Unlock()
 	return err
+}
+
+// setLoop remembers the state of the event loop, so that the server can stop
+// it.
+func (s *Server) setLoop(l *loopState) {
+	s.mu.Lock()
+	s.loop = l
+	s.mu.Unlock()
+}
+
+// loopState returns the state of the event loop, if it runs.
+func (s *Server) loopState() *loopState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loop
+}
+
+// closeLoopFD closes the listener of the event loop.
+func (s *Server) closeLoopFD() {
+	s.mu.Lock()
+	fd := s.loopFD
+	s.loopFD = 0
+	s.mu.Unlock()
+	if fd > 0 {
+		netloop.Close(fd)
+	}
+}
+
+// loopListener returns the descriptor of the listener of the event loop.
+func (s *Server) loopListener() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loopFD
+}
+
+// addLoopClient registers a client served by the event loop.
+func (s *Server) addLoopClient(c *client) {
+	s.mu.Lock()
+	s.loopClients[c] = struct{}{}
+	s.mu.Unlock()
+}
+
+// removeLoopClient drops a client served by the event loop.
+func (s *Server) removeLoopClient(c *client) {
+	s.mu.Lock()
+	delete(s.loopClients, c)
+	s.mu.Unlock()
+}
+
+// allClients returns the clients of the server: the ones of the goroutine
+// model and the ones of the event loop.
+func (s *Server) allClients() []*client {
+	s.mu.Lock()
+	out := make([]*client, 0, len(s.clients)+len(s.loopClients))
+	for _, c := range s.clients {
+		out = append(out, c)
+	}
+	for c := range s.loopClients {
+		out = append(out, c)
+	}
+	s.mu.Unlock()
+	return out
+}
+
+// countConn counts the connections of the server.
+func (s *Server) countConn(n int64) {
+	atomic.AddInt64(&s.connsNum, n)
 }
 
 // NewLoop creates a Server that serves the connections with an event loop
@@ -455,7 +542,7 @@ func (s *Server) Serve() error {
 			}
 			return err
 		}
-		atomic.AddInt64(&s.connsNum, 1)
+		s.countConn(1)
 		c := newClient(conn)
 		s.mu.Lock()
 		s.conns[conn] = struct{}{}
@@ -471,10 +558,10 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		delete(s.conns, conn)
 		delete(s.clients, conn)
 		s.mu.Unlock()
-		atomic.AddInt64(&s.connsNum, -1)
+		s.countConn(-1)
 		s.PubSub.removeClient(c)
 		c.unwatchAll(s.DB(c.db))
-		close(c.done)
+		c.closeDone()
 		conn.Close()
 		s.Logger.Printf("server: client disconnected: %s", conn.RemoteAddr())
 	}()
@@ -594,10 +681,6 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		started := time.Now()
 		err = s.executeCommand(ctx)
 		s.sl.maybeAdd(args, c, time.Since(started))
-		if spec.write && len(args) > 1 {
-			// A write may have made a key available for a blocked client.
-			s.waiters.signal(args[1])
-		}
 		if ctx.wait != nil {
 			// A blocking command found nothing to pop: release the write
 			// lock (the Pub/Sub pump needs it) and wait for a key to become
@@ -605,8 +688,19 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			req := ctx.wait
 			ctx.wait = nil
 			c.writeMu.Unlock()
-			woken := s.waitForKeys(c, req)
+			woken, werr := s.waitForKeys(c, req)
 			c.writeMu.Lock()
+			if werr != nil {
+				// The client was unblocked with CLIENT UNBLOCK: the
+				// answer is the error, not the result of the command.
+				if err := ctx.W.WriteError(werr.Error()); err != nil {
+					c.writeMu.Unlock()
+					s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+					return
+				}
+				c.writeMu.Unlock()
+				continue
+			}
 			if !woken {
 				// The timeout expired: reply with a null array.
 				if err := ctx.W.WriteNullArray(); err != nil {
@@ -627,8 +721,16 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 				req = ctx.wait
 				ctx.wait = nil
 				c.writeMu.Unlock()
-				woken = s.waitForKeys(c, req)
+				woken, werr = s.waitForKeys(c, req)
 				c.writeMu.Lock()
+				if werr != nil {
+					if err := ctx.W.WriteError(werr.Error()); err != nil {
+						c.writeMu.Unlock()
+						s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
+						return
+					}
+					break
+				}
 				if !woken {
 					if err := ctx.W.WriteNullArray(); err != nil {
 						c.writeMu.Unlock()
@@ -643,8 +745,19 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 				c.writeMu.Unlock()
 				return
 			}
+			// The command has finished: a write may have made a key
+			// available for another blocked client. The signal comes
+			// after the command: a command that only started waiting has
+			// changed nothing.
+			if spec.write && len(args) > 1 {
+				s.waiters.signal(args[1])
+			}
 			c.writeMu.Unlock()
 			continue
+		}
+		if spec.write && len(args) > 1 {
+			// A write may have made a key available for a blocked client.
+			s.waiters.signal(args[1])
 		}
 		if suppress {
 			shadow.Flush()

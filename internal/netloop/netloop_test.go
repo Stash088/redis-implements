@@ -45,7 +45,7 @@ func TestPollerRoundTrip(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the listener was not reported")
 		}
-		events, err := p.Wait()
+		events, err := p.Wait(5 * time.Second)
 		if err != nil {
 			t.Fatalf("wait: %v", err)
 		}
@@ -70,7 +70,7 @@ func TestPollerRoundTrip(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the data was not reported")
 		}
-		events, err := p.Wait()
+		events, err := p.Wait(5 * time.Second)
 		if err != nil {
 			t.Fatalf("wait: %v", err)
 		}
@@ -126,5 +126,63 @@ func TestWouldBlock(t *testing.T) {
 	_, err = netloop.Read(cfd, buf)
 	if !netloop.WouldBlock(err) {
 		t.Fatalf("read: got %v, want the would block error", err)
+	}
+}
+
+// TestPollerTimeout checks that the wait returns when the timeout expires,
+// even when nothing happens.
+func TestPollerTimeout(t *testing.T) {
+	p, err := netloop.NewPoller()
+	if err != nil {
+		t.Skipf("the poller is not supported here: %v", err)
+	}
+	defer p.Close()
+
+	start := time.Now()
+	events, err := p.Wait(50 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("got %d events, want none", len(events))
+	}
+	elapsed := time.Since(start)
+	if elapsed < 40*time.Millisecond {
+		t.Fatalf("the wait returned too early: %v", elapsed)
+	}
+}
+
+// TestPollerNotify checks that a notification wakes a poller that waits: the
+// event may come from another goroutine, not from a socket.
+func TestPollerNotify(t *testing.T) {
+	p, err := netloop.NewPoller()
+	if err != nil {
+		t.Skipf("the poller is not supported here: %v", err)
+	}
+	defer p.Close()
+
+	done := make(chan []netloop.Event, 1)
+	go func() {
+		events, err := p.Wait(5 * time.Second)
+		if err != nil {
+			done <- nil
+			return
+		}
+		done <- events
+	}()
+
+	// The notification goes out while the poller waits.
+	time.Sleep(20 * time.Millisecond)
+	if err := p.Notify(); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+
+	select {
+	case events := <-done:
+		if len(events) != 1 || !events[0].Wakeup {
+			t.Fatalf("got %+v, want a wakeup event", events)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the notification did not wake the poller")
 	}
 }
