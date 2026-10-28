@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestConcurrentReadWriteStringValue checks the copy-on-write invariant: a
@@ -91,5 +92,40 @@ func TestGetRangeSnapshotKeepsOldBuffer(t *testing.T) {
 	}
 	if !bytes.Equal(snap, []byte("abcdef")) {
 		t.Errorf("snapshot changed: got %q, want abcdef", snap)
+	}
+}
+
+// TestSetStringReusesTheEntry checks that overwriting a string updates the
+// entry in place: the readers that already got the old value keep it (the
+// value buffers are never modified in place), and the key holds the new
+// value.
+func TestSetStringReusesTheEntry(t *testing.T) {
+	s := New()
+	key := []byte("k")
+	s.SetString(key, []byte("first"))
+
+	old, ok, err := s.GetString(key)
+	if err != nil || !ok {
+		t.Fatalf("GetString: %v %v", err, ok)
+	}
+
+	// The overwrite must not touch the buffer the reader holds.
+	s.SetString(key, []byte("second"))
+	if string(old) != "first" {
+		t.Fatalf("the old value became %q, want first", old)
+	}
+
+	cur, ok, err := s.GetString(key)
+	if err != nil || !ok {
+		t.Fatalf("GetString: %v %v", err, ok)
+	}
+	if string(cur) != "second" {
+		t.Fatalf("the value is %q, want second", cur)
+	}
+	// The TTL of the key is reset by the overwrite, like in Redis.
+	s.SetStringWithTTL(key, []byte("third"), time.Hour)
+	s.SetString(key, []byte("fourth"))
+	if ttl, ok := s.TTL(key); !ok || ttl != -1 {
+		t.Fatalf("the TTL is %v (%v), want no expiry", ttl, ok)
 	}
 }

@@ -32,6 +32,11 @@ type client struct {
 	conn net.Conn
 	addr string
 
+	// slot is the counter slot of the connection: the server spreads the
+	// counters it writes on the path of every command over the slots, so
+	// the connections do not share a cache line.
+	slot int
+
 	// writeMu serializes access to the connection's resp.Writer between the
 	// command loop and the Pub/Sub pump goroutine, which share the bufio.
 	writeMu sync.Mutex
@@ -63,14 +68,19 @@ type client struct {
 	dirtyCAS atomic.Bool // a watched key was modified since WATCH
 
 	// statMu guards fields read cross-goroutine by CLIENT LIST:
-	// watched, inMulti, lastCmd. Mutations happen on the connection's own
+	// watched, inMulti. Mutations happen on the connection's own
 	// goroutine; the lock is uncontended in practice.
 	statMu  sync.Mutex
 	watched map[string]struct{}
 	nameMu  sync.Mutex
 	name    string
 	created time.Time
-	lastCmd string
+
+	// lastCmd is the name of the last command the connection ran (CLIENT
+	// LIST). It is written on the path of every command, so it is stored in
+	// an atomic pointer to a stable string instead of taking the lock of
+	// the client state.
+	lastCmd atomic.Pointer[string]
 
 	// ctx and args are reused by the command loop: the connection handles
 	// one command at a time, so the per-command context and the slice of
@@ -82,8 +92,10 @@ type client struct {
 }
 
 func newClient(conn net.Conn) *client {
+	id := clientSeq.Add(1)
 	c := &client{
-		id:       clientSeq.Add(1),
+		id:       id,
+		slot:     int(id % counterSlots),
 		conn:     conn,
 		addr:     conn.RemoteAddr().String(),
 		channels: make(map[string]struct{}),
@@ -164,10 +176,23 @@ func (c *client) getName() string {
 }
 
 // setLastCmd records the last executed command name (CLIENT LIST).
-func (c *client) setLastCmd(name string) {
-	c.statMu.Lock()
-	c.lastCmd = name
-	c.statMu.Unlock()
+//
+// The name is a pointer to a stable string: the registry keeps the names of
+// the commands for the whole life of the server, so the pointer can be
+// stored without allocating on the path of every command.
+func (c *client) setLastCmd(name *string) {
+	if name == nil {
+		return
+	}
+	c.lastCmd.Store(name)
+}
+
+// lastCmdName returns the name of the last executed command.
+func (c *client) lastCmdName() string {
+	if p := c.lastCmd.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // addWatchedKey registers a watched key (cmdWatch).

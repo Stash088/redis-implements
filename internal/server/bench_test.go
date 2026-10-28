@@ -281,3 +281,79 @@ func BenchmarkScanTraversal(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkHScanTraversal measures a full HSCAN traversal of a hash with
+// 10000 fields (COUNT=100): the total cost the client pays to walk the
+// fields of a collection.
+func BenchmarkHScanTraversal(b *testing.B) {
+	addr := benchServer(b, func() {})
+	conn, r, w := benchClient(b, addr)
+	defer conn.Close()
+
+	const fields = 10000
+	for i := 0; i < fields; i++ {
+		cmd := resp.NewArray([]resp.Value{
+			resp.NewBulkString([]byte("HSET")),
+			resp.NewBulkString([]byte("h")),
+			resp.NewBulkString([]byte("field" + strconv.Itoa(i))),
+			resp.NewBulkString([]byte("v")),
+		})
+		if err := w.WriteValue(cmd); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < fields; i++ {
+		if _, err := r.ReadValue(); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	scan := func(cursor string) (resp.Value, error) {
+		cmd := resp.NewArray([]resp.Value{
+			resp.NewBulkString([]byte("HSCAN")),
+			resp.NewBulkString([]byte("h")),
+			resp.NewBulkString([]byte(cursor)),
+			resp.NewBulkString([]byte("COUNT")),
+			resp.NewBulkString([]byte("100")),
+		})
+		if err := w.WriteValue(cmd); err != nil {
+			return resp.Value{}, err
+		}
+		if err := w.Flush(); err != nil {
+			return resp.Value{}, err
+		}
+		return r.ReadValue()
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cursor := "0"
+		steps := 0
+		seen := 0
+		for {
+			v, err := scan(cursor)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if v.Kind != resp.KindArray || len(v.Array) != 2 {
+				b.Fatalf("bad HSCAN reply")
+			}
+			cursor = string(v.Array[0].Str)
+			seen += len(v.Array[1].Array) / 2
+			steps++
+			if cursor == "0" {
+				break
+			}
+			if steps > fields+10 {
+				b.Fatalf("HSCAN does not terminate")
+			}
+		}
+		if seen != fields {
+			b.Fatalf("the traversal returned %d fields, want %d", seen, fields)
+		}
+	}
+}

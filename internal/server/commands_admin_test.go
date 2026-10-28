@@ -147,6 +147,22 @@ func TestConfigGet(t *testing.T) {
 		string(v.Array[0].Str) != "maxmemory-policy" || string(v.Array[1].Str) != "noeviction" {
 		t.Errorf("CONFIG GET exact: got %+v", v)
 	}
+
+	// Several patterns: the parameters matching any of them are returned.
+	v = c.cmd("CONFIG", "GET", "maxmemory-policy", "maxmemory-samples")
+	if v.Kind != resp.KindArray || len(v.Array) != 4 {
+		t.Fatalf("CONFIG GET with two patterns: got %+v", v)
+	}
+	got := map[string]string{}
+	for i := 0; i < len(v.Array); i += 2 {
+		got[string(v.Array[i].Str)] = string(v.Array[i+1].Str)
+	}
+	if _, ok := got["maxmemory-policy"]; !ok {
+		t.Errorf("CONFIG GET with two patterns: missing maxmemory-policy: %+v", got)
+	}
+	if _, ok := got["maxmemory-samples"]; !ok {
+		t.Errorf("CONFIG GET with two patterns: missing maxmemory-samples: %+v", got)
+	}
 }
 
 func TestConfigSet(t *testing.T) {

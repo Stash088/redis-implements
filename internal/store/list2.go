@@ -75,7 +75,7 @@ func (s *Store) ListRemove(key []byte, count int, value []byte) (int, error) {
 		}
 	}
 	if e.List.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return removed, nil
@@ -119,7 +119,7 @@ func (s *Store) ListTrim(key []byte, start, stop int) error {
 		s.addCost(sh, e, -(len(v) + elemOverhead))
 	}
 	if e.List.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return nil
@@ -195,7 +195,7 @@ func (s *Store) ListMove(source, dest []byte, fromLeft, toLeft bool) ([]byte, bo
 	de, ok := s.entryLocked(dstSh, dest)
 	if !ok {
 		de = &Entry{Type: TypeList, List: newList(), cost: len(string(dest))}
-		dstSh.usedBytes += len(string(dest))
+		s.addBytes(dstSh, int64(len(string(dest))))
 		dstSh.data[string(dest)] = de
 	} else if de.Type != TypeList {
 		return nil, false, ErrWrongType
@@ -219,7 +219,7 @@ func (s *Store) ListMove(source, dest []byte, fromLeft, toLeft bool) ([]byte, bo
 	}
 	s.addCost(dstSh, de, len(v)+elemOverhead)
 	if se.List.Len() == 0 {
-		srcSh.usedBytes -= se.cost
+		s.addBytes(srcSh, -int64(se.cost))
 		delete(srcSh.data, string(source))
 	}
 	return v, true, nil
@@ -256,7 +256,7 @@ func (s *Store) ListPopAny(keys [][]byte, left bool) (key []byte, value []byte, 
 		s.touchLocked(sh, string(k))
 		s.addCost(sh, e, -(len(v) + elemOverhead))
 		if e.List.Len() == 0 {
-			sh.usedBytes -= e.cost
+			s.addBytes(sh, -int64(e.cost))
 			delete(sh.data, string(k))
 		}
 		return k, v, true, nil

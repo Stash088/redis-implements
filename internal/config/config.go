@@ -55,12 +55,44 @@ type Config struct {
 // (plain bytes, k/kb, m/mb, g/gb — case-insensitive).
 type maxMemoryFlag struct{ v *int64 }
 
-func (f *maxMemoryFlag) String() string { return strconv.FormatInt(*f.v, 10) }
+func (f *maxMemoryFlag) String() string {
+	// The flag package calls String on the zero value of the flag when it
+	// prints the usage: a nil pointer must not panic the server.
+	if f == nil || f.v == nil {
+		return "0"
+	}
+	return strconv.FormatInt(*f.v, 10)
+}
 
 func (f *maxMemoryFlag) Set(s string) error {
 	n, err := ParseBytes(s)
 	if err != nil {
 		return fmt.Errorf("invalid --maxmemory %q", s)
+	}
+	*f.v = n
+	return nil
+}
+
+// saveFlag parses --save. Redis accepts an empty value to disable the
+// snapshots, and the number of seconds between them.
+type saveFlag struct{ v *int }
+
+func (f *saveFlag) String() string {
+	if f == nil || f.v == nil {
+		return "0"
+	}
+	return strconv.Itoa(*f.v)
+}
+
+func (f *saveFlag) Set(s string) error {
+	if strings.TrimSpace(s) == "" {
+		// An empty value disables the snapshots, like in Redis.
+		*f.v = 0
+		return nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return fmt.Errorf("invalid --save %q", s)
 	}
 	*f.v = n
 	return nil
@@ -118,7 +150,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&c.AppendFsync, "appendfsync", c.AppendFsync, "fsync policy: always, everysec or no")
 	fs.StringVar(&c.DBFilename, "dbfilename", c.DBFilename, "RDB snapshot file name")
 	fs.StringVar(&c.AppendFilename, "appendfilename", c.AppendFilename, "AOF file name")
-	fs.IntVar(&c.SaveSeconds, "save", c.SaveSeconds, "seconds between RDB saves (0 disables)")
+	fs.Var(&saveFlag{&c.SaveSeconds}, "save", "seconds between RDB saves (0 disables, an empty value disables too)")
 	fs.IntVar(&c.SaveChanges, "save-changes", c.SaveChanges, "minimum changes to trigger an RDB save")
 	fs.Var(&maxMemoryFlag{&c.MaxMemory}, "maxmemory", "memory limit in bytes (suffixes k/m/g allowed), 0 disables")
 	fs.StringVar(&c.MaxMemoryPolicy, "maxmemory-policy", c.MaxMemoryPolicy, "eviction policy: noeviction, allkeys-lru, volatile-lru, allkeys-random, volatile-random, volatile-ttl")

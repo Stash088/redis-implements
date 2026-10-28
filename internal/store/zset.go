@@ -11,6 +11,10 @@ type ZEntry struct {
 type ZSet struct {
 	dict map[string]float64
 	sl   *skiplist
+	// version counts the changes of the set: it says whether the snapshot
+	// of the scan commands (ZSCAN) is still valid. Every change goes
+	// through Add and Remove, so the counter cannot miss one.
+	version uint64
 }
 
 func newZSet() *ZSet {
@@ -24,12 +28,14 @@ func (z *ZSet) Add(score float64, member []byte) bool {
 		if old != score {
 			z.sl.Delete(old, member)
 			z.sl.Insert(score, member)
+			z.version++
 		}
 		z.dict[string(member)] = score
 		return false
 	}
 	z.sl.Insert(score, member)
 	z.dict[string(member)] = score
+	z.version++
 	return true
 }
 
@@ -41,6 +47,7 @@ func (z *ZSet) Remove(member []byte) bool {
 	}
 	z.sl.Delete(score, member)
 	delete(z.dict, string(member))
+	z.version++
 	return true
 }
 
@@ -131,7 +138,7 @@ func (s *Store) ZAdd(key []byte, score float64, member []byte) (int, error) {
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeZSet, ZSet: newZSet(), cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType
@@ -191,7 +198,7 @@ func (s *Store) ZRem(key []byte, members ...[]byte) (int, error) {
 		}
 	}
 	if e.ZSet.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return removed, nil

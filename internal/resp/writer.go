@@ -26,6 +26,11 @@ type Writer struct {
 	// bufSize is the capacity of the buffer; payloads of this size and
 	// bigger take the direct path.
 	bufSize int
+	// num and numLen are the scratch buffers the numbers are spelled in.
+	// The writer belongs to one connection, so the buffers are reused by
+	// the replies and the reply does not allocate.
+	num    []byte
+	numLen []byte
 }
 
 // NewWriter returns a Writer that writes RESP values to w using a default-sized
@@ -38,7 +43,13 @@ func NewWriter(w io.Writer) *Writer {
 // the given size. Larger buffers reduce the number of underlying writes when
 // many values are buffered between Flush calls.
 func NewWriterSize(w io.Writer, size int) *Writer {
-	return &Writer{bw: bufio.NewWriterSize(w, size), raw: w, bufSize: size}
+	return &Writer{
+		bw:      bufio.NewWriterSize(w, size),
+		raw:     w,
+		bufSize: size,
+		num:     make([]byte, 0, 32),
+		numLen:  make([]byte, 0, 8),
+	}
 }
 
 // Flush flushes any buffered data to the underlying writer.
@@ -73,10 +84,40 @@ func (w *Writer) WriteInteger(n int64) error {
 	if err := w.bw.WriteByte(':'); err != nil {
 		return err
 	}
-	if _, err := w.bw.WriteString(strconv.FormatInt(n, 10)); err != nil {
+	if err := w.writeInt(n); err != nil {
 		return err
 	}
 	return w.writeCRLF()
+}
+
+// WriteBulkUint writes a bulk string with the decimal spelling of an
+// unsigned number. It saves the caller the allocation of the string.
+func (w *Writer) WriteBulkUint(n uint64) error {
+	w.num = strconv.AppendUint(w.num[:0], n, 10)
+	if err := w.bw.WriteByte('$'); err != nil {
+		return err
+	}
+	// The length goes into its own buffer: the digits of the number must
+	// stay intact.
+	w.numLen = strconv.AppendInt(w.numLen[:0], int64(len(w.num)), 10)
+	if _, err := w.bw.Write(w.numLen); err != nil {
+		return err
+	}
+	if err := w.writeCRLF(); err != nil {
+		return err
+	}
+	if _, err := w.bw.Write(w.num); err != nil {
+		return err
+	}
+	return w.writeCRLF()
+}
+
+// writeInt writes the decimal spelling of a number to the buffer. The digits
+// go into the scratch buffer of the writer, so the reply does not allocate.
+func (w *Writer) writeInt(n int64) error {
+	w.num = strconv.AppendInt(w.num[:0], n, 10)
+	_, err := w.bw.Write(w.num)
+	return err
 }
 
 // WriteBulkString writes "$len\r\n<data>\r\n". A nil payload is written as a
@@ -165,22 +206,29 @@ func (w *Writer) WritePushHeader(n int) error {
 // WriteDouble writes a RESP3 double ",1.5\r\n". Infinities and NaN use the
 // spellings Redis uses.
 func (w *Writer) WriteDouble(f float64) error {
-	var s string
-	switch {
-	case math.IsNaN(f):
-		s = "nan"
-	case math.IsInf(f, 1):
-		s = "inf"
-	case math.IsInf(f, -1):
-		s = "-inf"
-	default:
-		s = strconv.FormatFloat(f, 'g', 17, 64)
-	}
 	if err := w.bw.WriteByte(','); err != nil {
 		return err
 	}
-	if _, err := w.bw.WriteString(s); err != nil {
-		return err
+	switch {
+	case math.IsNaN(f):
+		if _, err := w.bw.WriteString("nan"); err != nil {
+			return err
+		}
+	case math.IsInf(f, 1):
+		if _, err := w.bw.WriteString("inf"); err != nil {
+			return err
+		}
+	case math.IsInf(f, -1):
+		if _, err := w.bw.WriteString("-inf"); err != nil {
+			return err
+		}
+	default:
+		// The digits go into the scratch buffer of the writer: the reply
+		// does not allocate.
+		w.num = strconv.AppendFloat(w.num[:0], f, 'g', 17, 64)
+		if _, err := w.bw.Write(w.num); err != nil {
+			return err
+		}
 	}
 	return w.writeCRLF()
 }
@@ -278,7 +326,7 @@ func (w *Writer) writeLen(prefix byte, n int64) error {
 	if err := w.bw.WriteByte(prefix); err != nil {
 		return err
 	}
-	if _, err := w.bw.WriteString(strconv.FormatInt(n, 10)); err != nil {
+	if err := w.writeInt(n); err != nil {
 		return err
 	}
 	return w.writeCRLF()

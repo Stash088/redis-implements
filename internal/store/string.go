@@ -79,10 +79,22 @@ func (s *Store) setStringLocked(sh *shard, key, value []byte, expiresAt time.Tim
 	k := string(key)
 	s.touchLocked(sh, k)
 	cost := len(k) + len(value)
-	sh.usedBytes += cost
 	if e, ok := sh.data[k]; ok {
-		sh.usedBytes -= e.cost
+		if e.Type == TypeString {
+			// The entry already holds a string: it is updated in place.
+			// The value buffers are never modified in place (see the
+			// Entry invariant), so a reader that already got the old
+			// value keeps it.
+			s.addBytes(sh, int64(cost-e.cost))
+			e.Str = value
+			e.ExpiresAt = expiresAt
+			e.cost = cost
+			e.lastAccess.Store(s.clock().UnixNano())
+			return
+		}
+		s.addBytes(sh, -int64(e.cost))
 	}
+	s.addBytes(sh, int64(cost))
 	e := &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost}
 	e.lastAccess.Store(s.clock().UnixNano())
 	sh.data[k] = e
@@ -119,7 +131,7 @@ func (s *Store) GetDel(key []byte) ([]byte, bool, error) {
 	}
 	v := e.Str
 	s.touchKeyLocked(sh, key)
-	sh.usedBytes -= e.cost
+	s.addBytes(sh, -int64(e.cost))
 	delete(sh.data, string(key))
 	return v, true, nil
 }
@@ -216,7 +228,7 @@ func (s *Store) SetRange(key []byte, offset int64, value []byte) (int, error) {
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeString, Str: []byte{}, cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeString {
 		return 0, ErrWrongType

@@ -100,7 +100,7 @@ func (s *Store) ZIncrBy(key []byte, delta float64, member []byte) (float64, erro
 	e, ok := s.entryLocked(sh, key)
 	if !ok {
 		e = &Entry{Type: TypeZSet, ZSet: newZSet(), cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeZSet {
 		return 0, ErrWrongType

@@ -228,7 +228,7 @@ func (s *Store) storeZSet(dst []byte, acc map[string]*zsetOp) (int, error) {
 		if !e.Expired(now) && e.Type != TypeZSet {
 			return 0, ErrWrongType
 		}
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(dst))
 	}
 	z := newZSet()
@@ -239,7 +239,7 @@ func (s *Store) storeZSet(dst []byte, acc map[string]*zsetOp) (int, error) {
 	}
 	e := &Entry{Type: TypeZSet, ZSet: z, cost: cost}
 	e.lastAccess.Store(now.UnixNano())
-	sh.usedBytes += cost
+	s.addBytes(sh, int64(cost))
 	sh.data[string(dst)] = e
 	return len(acc), nil
 }
@@ -285,7 +285,7 @@ func (s *Store) ZRemRangeByRank(key []byte, start, stop int) (int, error) {
 		removed++
 	}
 	if e.ZSet.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return removed, nil
@@ -311,7 +311,7 @@ func (s *Store) ZRemRangeByScore(key []byte, min, max float64, minExcl, maxExcl 
 		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 	}
 	if e.ZSet.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return len(entries), nil
@@ -337,7 +337,7 @@ func (s *Store) ZRemRangeByLex(key []byte, min, max []byte, minExcl, maxExcl boo
 		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 	}
 	if e.ZSet.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return len(entries), nil
@@ -382,7 +382,7 @@ func (s *Store) ZPop(key []byte, count int, lowest bool) ([]ZEntry, error) {
 		out = append(out, *entry)
 	}
 	if e.ZSet.Len() == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return out, nil
@@ -421,7 +421,7 @@ func (s *Store) ZPopAny(keys [][]byte, lowest bool) (key []byte, entry ZEntry, o
 		e.ZSet.Remove(entry.Member)
 		s.addCost(sh, e, -(len(entry.Member) + elemOverhead))
 		if e.ZSet.Len() == 0 {
-			sh.usedBytes -= e.cost
+			s.addBytes(sh, -int64(e.cost))
 			delete(sh.data, string(k))
 		}
 		return k, *entry, true, nil

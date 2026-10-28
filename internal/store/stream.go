@@ -484,7 +484,7 @@ func (s *Store) StreamAdd(key []byte, mode StreamIDMode, id StreamID, fields [][
 			return StreamID{}, ErrStreamNotCreated
 		}
 		e = &Entry{Type: TypeStream, Stream: &Stream{}, cost: len(string(key))}
-		sh.usedBytes += len(string(key))
+		s.addBytes(sh, int64(len(string(key))))
 		sh.data[string(key)] = e
 	} else if e.Type != TypeStream {
 		return StreamID{}, ErrWrongType

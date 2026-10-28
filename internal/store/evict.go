@@ -32,7 +32,7 @@ func (s *Store) EvictCycle(policy string, samples int, maxBytes int64) int {
 		// The victim may have been modified or removed while the lock was
 		// not held; only a present entry is a valid victim.
 		if e, present := sh.data[victim.key]; present && e == victim.e {
-			sh.usedBytes -= e.cost
+			s.addBytes(sh, -int64(e.cost))
 			s.touchLocked(sh, victim.key)
 			delete(sh.data, victim.key)
 			total -= e.cost
@@ -152,5 +152,5 @@ func (s *Store) markAccess(e *Entry) {
 // Callers must hold the write lock of the shard that owns the entry.
 func (s *Store) addCost(sh *shard, e *Entry, delta int) {
 	e.cost += delta
-	sh.usedBytes += delta
+	s.addBytes(sh, int64(delta))
 }

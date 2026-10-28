@@ -67,7 +67,7 @@ func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
 	de, ok := dstSh.data[string(dest)]
 	if !ok {
 		de = &Entry{Type: TypeSet, Set: make(map[string]struct{}), cost: len(string(dest))}
-		dstSh.usedBytes += len(string(dest))
+		s.addBytes(dstSh, int64(len(string(dest))))
 		dstSh.data[string(dest)] = de
 	} else if de.Type != TypeSet {
 		return false, ErrWrongType
@@ -76,14 +76,18 @@ func (s *Store) SetMove(source, dest, member []byte) (bool, error) {
 	s.touchLocked(dstSh, string(dest))
 	// Remove from the source.
 	delete(se.Set, name)
+	// The member left the source and may enter the destination: the
+	// snapshots of the scan commands do not hold it any more.
+	se.bumpVersion()
 	s.addCost(srcSh, se, -(len(name) + elemOverhead))
 	if len(se.Set) == 0 {
-		srcSh.usedBytes -= se.cost
+		s.addBytes(srcSh, -int64(se.cost))
 		delete(srcSh.data, string(source))
 	}
 	// Add to the destination.
 	if _, exists := de.Set[name]; !exists {
 		de.Set[name] = struct{}{}
+		de.bumpVersion()
 		s.addCost(dstSh, de, len(name)+elemOverhead)
 	}
 	return true, nil
@@ -124,10 +128,13 @@ func (s *Store) SetPop(key []byte, count int) ([][]byte, error) {
 		m := members[perm[i]]
 		out = append(out, []byte(m))
 		delete(e.Set, m)
+		// The member is gone: the snapshot of the scan commands does not
+		// hold it any more.
+		e.bumpVersion()
 		s.addCost(sh, e, -(len(m) + elemOverhead))
 	}
 	if len(e.Set) == 0 {
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	return out, nil
@@ -323,7 +330,7 @@ func (s *Store) SetStore(key []byte, members [][]byte) (int, error) {
 		if e.Type != TypeSet {
 			return 0, ErrWrongType
 		}
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 	}
 	set := make(map[string]struct{}, len(members))
@@ -337,7 +344,7 @@ func (s *Store) SetStore(key []byte, members [][]byte) (int, error) {
 	}
 	e := &Entry{Type: TypeSet, Set: set, cost: cost}
 	e.lastAccess.Store(now.UnixNano())
-	sh.usedBytes += cost
+	s.addBytes(sh, int64(cost))
 	sh.data[string(key)] = e
 	return len(set), nil
 }

@@ -29,9 +29,12 @@ type Ctx struct {
 
 	// spec is the resolved command and cmdName its canonical (lower case)
 	// name. The connection loop fills them in once per command so that the
-	// dispatch path does not have to look the command up again.
-	spec    cmdSpec
-	cmdName string
+	// dispatch path does not have to look the command up again. cmdNamePtr
+	// points to the same name and is stable: the client keeps it to show
+	// the last command it ran.
+	spec       cmdSpec
+	cmdName    string
+	cmdNamePtr *string
 
 	// wait is set by a blocking command that found nothing to pop: the
 	// connection loop waits for a key to become available and retries.
@@ -41,6 +44,16 @@ type Ctx struct {
 // proto3 reports whether the client speaks RESP3.
 func (c *Ctx) proto3() bool {
 	return c.Client != nil && c.Client.Proto() >= 3
+}
+
+// counterSlot returns the slot of the counters the connection writes to. The
+// counters are spread over the slots, so the connections do not share a
+// cache line.
+func (c *Ctx) counterSlot() int {
+	if c.Client == nil {
+		return 0
+	}
+	return c.Client.slot
 }
 
 // Handler implements a single Redis command.
@@ -59,10 +72,11 @@ type Server struct {
 	cmdsUpper map[string]cmdSpec // the same commands in upper case: a lookup by
 	// the bytes the client sent must not allocate a string
 
-	// received counts the commands processed. It is written by every
-	// connection, so it is padded to a cache line: otherwise all the
-	// connections would fight for the same line.
-	received commandsCounter
+	// received counts the commands processed. Every connection writes to
+	// the counter of its own slot: the counters are padded to a cache line
+	// and spread over the slots, so the connections do not fight for the
+	// same one.
+	received [counterSlots]commandsCounter
 
 	// Sizes of the socket buffers of a connection (0 means the default).
 	bufReadSize  int
@@ -74,8 +88,8 @@ type Server struct {
 
 	saveMu   sync.Mutex
 	aofMu    sync.Mutex
-	dirty    counter      // writes since the last save
-	lastSave atomic.Int64 // unix seconds of the last successful save
+	dirty    [counterSlots]counter // writes since the last save
+	lastSave atomic.Int64          // unix seconds of the last successful save
 	saveStop chan struct{}
 
 	// Memory management (see evict.go in store): --maxmemory and policy.
@@ -111,6 +125,12 @@ type Server struct {
 // that the connections do not fight for the same one.
 const cacheLineSize = 64
 
+// counterSlots is the number of counters the command counters are spread
+// over. Every connection writes to the counter of its own slot, so the
+// connections do not share a cache line: the counters are written on the path
+// of every command, and a shared line would bounce between the cores.
+const counterSlots = 16
+
 // counter is an atomic counter padded to a cache line.
 type counter struct {
 	v atomic.Int64
@@ -123,7 +143,8 @@ func (c *counter) Store(n int64)      { c.v.Store(n) }
 func (c *counter) Swap(n int64) int64 { return c.v.Swap(n) }
 
 // commandsCounter counts the commands processed by the server. Every
-// connection writes to it, so it is padded to a cache line.
+// connection writes to the counter of its own slot, so it is padded to a
+// cache line.
 type commandsCounter struct {
 	v atomic.Uint64
 	_ [cacheLineSize - 8]byte
@@ -133,6 +154,31 @@ func (c *commandsCounter) Add(n uint64)         { c.v.Add(n) }
 func (c *commandsCounter) Load() uint64         { return c.v.Load() }
 func (c *commandsCounter) Store(n uint64)       { c.v.Store(n) }
 func (c *commandsCounter) Swap(n uint64) uint64 { return c.v.Swap(n) }
+
+// receivedTotal returns the number of the commands processed by the server.
+func (s *Server) receivedTotal() uint64 {
+	var n uint64
+	for i := range s.received {
+		n += s.received[i].Load()
+	}
+	return n
+}
+
+// dirtyTotal returns the number of the writes since the last save.
+func (s *Server) dirtyTotal() int64 {
+	var n int64
+	for i := range s.dirty {
+		n += s.dirty[i].Load()
+	}
+	return n
+}
+
+// resetDirty sets the number of the writes since the last save back to zero.
+func (s *Server) resetDirty() {
+	for i := range s.dirty {
+		s.dirty[i].Store(0)
+	}
+}
 
 // propagate appends args to the AOF when one is enabled.
 func (c *Ctx) propagate(args ...[][]byte) {
@@ -148,11 +194,18 @@ func (c *Ctx) propagate(args ...[][]byte) {
 
 // propagateCmd writes the current command to the AOF, rewriting relative TTLs
 // to absolute expiry. Handlers call it only after a mutation took effect.
+//
+// The dispatcher writes the commands that propagate themselves to the AOF
+// (the ones whose AOF entry depends on whether they took effect), so a
+// command that is written here must not be written there as well: a command
+// written twice would be applied twice on the replay.
 func (c *Ctx) propagateCmd() {
 	if c.Srv == nil {
 		return
 	}
-	c.Srv.dirty.Add(1)
+	if c.spec.write && !c.spec.aofSelf {
+		return
+	}
 	if c.Srv.AOF == nil {
 		return
 	}
@@ -417,7 +470,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			continue
 		}
 
-		s.received.Add(1)
+		s.received[c.slot].Add(1)
 		ctx := &c.ctx
 		*ctx = Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
 		// The command is resolved once per command: the lookup works on the
@@ -426,9 +479,12 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		if !ok {
 			// Unknown command: the name is only needed for the error
 			// message, so the string is built on this cold path.
-			ctx.cmdName = strings.ToLower(string(args[0]))
+			unknown := strings.ToLower(string(args[0]))
+			ctx.cmdName = unknown
+			ctx.cmdNamePtr = &unknown
 		} else {
 			ctx.cmdName = spec.name
+			ctx.cmdNamePtr = spec.namePtr
 			ctx.spec = spec
 		}
 		name := ctx.cmdName
@@ -437,7 +493,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		// command loop, so command execution and the final Flush must both
 		// happen under writeMu.
 		c.writeMu.Lock()
-		c.setLastCmd(name)
+		c.setLastCmd(ctx.cmdNamePtr)
 		if c.inMulti && !txnImmediate[name] {
 			s.queueForMulti(ctx, name)
 			if err := w.Flush(); err != nil {
@@ -546,6 +602,9 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 	spec := ctx.spec
 	if spec.handler == nil {
 		spec, _ = s.lookupCommand(ctx.Args[0])
+		// The handler may need the metadata of the command (the AOF
+		// propagation, for one), so the resolved command is kept.
+		ctx.spec = spec
 	}
 
 	// Deny memory-adding commands under noeviction once the store is over
@@ -561,7 +620,7 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 		s.propagateFromDispatch(ctx.Args)
 	}
 	if spec.write {
-		s.dirty.Add(1)
+		s.dirty[ctx.counterSlot()].Add(1)
 		// Evict only when a policy is configured; noeviction is handled by
 		// the pre-execution check above.
 		if m := s.maxMemory.Load(); m > 0 && s.maxMemoryPolicyName() != "noeviction" && int64(s.usedBytes()) > m {

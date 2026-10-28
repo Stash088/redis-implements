@@ -11,6 +11,7 @@ import (
 // in the shards' maps).
 func checkConsistency(t *testing.T, s *Store) {
 	t.Helper()
+	total := int64(0)
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.Lock()
@@ -18,10 +19,16 @@ func checkConsistency(t *testing.T, s *Store) {
 		for k, e := range sh.data {
 			sum += s.entryCostLocked(k, e)
 		}
-		if sum != sh.usedBytes {
-			t.Fatalf("shard %d: usedBytes=%d, recomputed=%d", i, sh.usedBytes, sum)
+		if sum != int(sh.usedBytes.Load()) {
+			t.Fatalf("shard %d: usedBytes=%d, recomputed=%d", i, sh.usedBytes.Load(), sum)
 		}
+		total += sh.usedBytes.Load()
 		sh.mu.Unlock()
+	}
+	// The total of the store must match the sum of the shards: the server
+	// reads it on the path of every write command.
+	if total != s.totalBytes.Load() {
+		t.Fatalf("the store holds %d bytes, the shards hold %d", s.totalBytes.Load(), total)
 	}
 }
 

@@ -212,9 +212,9 @@ func (s *Store) RestoreStream(key []byte, snap *StreamSnapshot) error {
 	cost := len(string(key))
 	s.touchKeyLocked(sh, key)
 	if old, ok := sh.data[string(key)]; ok {
-		sh.usedBytes -= old.cost
+		s.addBytes(sh, -int64(old.cost))
 	}
-	sh.usedBytes += cost + streamCost(st)
+	s.addBytes(sh, int64(cost+streamCost(st)))
 	sh.data[string(key)] = &Entry{Type: TypeStream, Stream: st, cost: cost}
 	return nil
 }

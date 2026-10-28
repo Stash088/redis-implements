@@ -75,6 +75,15 @@ type Entry struct {
 	ExpiresAt  time.Time           // zero value means no expiry
 	cost       int                 // approximate memory footprint, incl. key
 	lastAccess atomic.Int64        // nanos, updated on access (allkeys-lru)
+
+	// version counts the changes of the collection the entry holds: it says
+	// whether the snapshot of the scan commands is still valid. It is
+	// protected by the lock of the shard that owns the entry.
+	version uint64
+	// scanCache is the snapshot of the collection that the scan commands
+	// (HSCAN, SSCAN, ZSCAN) walk. It is published atomically, so a reader
+	// can build it without blocking the other readers of the shard.
+	scanCache atomic.Pointer[scanSnapshot]
 }
 
 // Invariant: the byte buffers reachable from an entry are never modified in
@@ -87,6 +96,12 @@ func (e *Entry) Expired(now time.Time) bool {
 	return !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt)
 }
 
+// bumpVersion marks the collection of the entry as changed: the snapshot the
+// scan commands walk becomes stale and is built again on the next call.
+//
+// Callers must hold the write lock of the shard that owns the entry.
+func (e *Entry) bumpVersion() { e.version++ }
+
 // Store is a thread-safe in-memory key/value store. The keyspace is split
 // into independently locked shards (see shard.go): a command takes the lock of
 // the shard of every key it touches, so commands on different shards run
@@ -94,6 +109,10 @@ func (e *Entry) Expired(now time.Time) bool {
 type Store struct {
 	shards [shardCount]shard
 	clock  func() time.Time // injectable for tests
+	// totalBytes is the sum of the costs of the entries of all the shards.
+	// It is updated with every change, so the memory accounting of the
+	// server does not need the locks of the shards.
+	totalBytes atomic.Int64
 }
 
 // New returns an empty Store.
@@ -106,18 +125,28 @@ func New() *Store {
 }
 
 // UsedBytes returns the approximate memory footprint of live entries. The
-// shards are visited one at a time, so the total may interleave with
-// concurrent writes; it is used for reporting and for the eviction budget,
-// where a moving total is fine.
+// total of the store is kept up to date by the writes, so the number is
+// read without taking the locks of the shards: the server checks it on the
+// path of every write command.
 func (s *Store) UsedBytes() int {
-	total := 0
-	for i := range s.shards {
-		sh := &s.shards[i]
-		sh.mu.RLock()
-		total += sh.usedBytes
-		sh.mu.RUnlock()
-	}
-	return total
+	return int(s.totalBytes.Load())
+}
+
+// addBytes applies a delta to the memory accounting of a shard and to the
+// total of the store.
+//
+// The caller must hold the write lock of the shard.
+func (s *Store) addBytes(sh *shard, delta int64) {
+	sh.usedBytes.Add(delta)
+	s.totalBytes.Add(delta)
+}
+
+// clearBytes drops the memory accounting of a shard that was emptied.
+//
+// The caller must hold the write lock of the shard.
+func (s *Store) clearBytes(sh *shard) {
+	s.addBytes(sh, -sh.usedBytes.Load())
+	sh.usedBytes.Store(0)
 }
 
 // Len returns the number of live keys.
@@ -214,7 +243,7 @@ func (s *Store) entryLocked(sh *shard, key []byte) (*Entry, bool) {
 		// Lazy expiration counts as a modification (like Redis), so WATCH
 		// clients get their transaction aborted.
 		s.touchKeyLocked(sh, key)
-		sh.usedBytes -= e.cost
+		s.addBytes(sh, -int64(e.cost))
 		delete(sh.data, string(key))
 		return nil, false
 	}
@@ -266,7 +295,7 @@ func (s *Store) expireKey(k string) {
 		return
 	}
 	s.touchLocked(sh, k)
-	sh.usedBytes -= e.cost
+	s.addBytes(sh, -int64(e.cost))
 	delete(sh.data, k)
 }
 
@@ -291,16 +320,28 @@ func (s *Store) newStringEntry(sh *shard, key []byte, value []byte, expiresAt ti
 	k := string(key)
 	if value == nil {
 		if e, ok := sh.data[k]; ok {
-			sh.usedBytes -= e.cost
+			s.addBytes(sh, -int64(e.cost))
 			delete(sh.data, k)
 		}
 		return
 	}
 	cost := len(k) + len(value)
-	sh.usedBytes += cost
 	if e, ok := sh.data[k]; ok {
-		sh.usedBytes -= e.cost
+		if e.Type == TypeString {
+			// The entry already holds a string: it is updated in place.
+			// The value buffers are never modified in place (see the
+			// Entry invariant), so a reader that already got the old
+			// value keeps it.
+			s.addBytes(sh, int64(cost-e.cost))
+			e.Str = value
+			e.ExpiresAt = expiresAt
+			e.cost = cost
+			e.lastAccess.Store(s.clock().UnixNano())
+			return
+		}
+		s.addBytes(sh, -int64(e.cost))
 	}
+	s.addBytes(sh, int64(cost))
 	e := &Entry{Type: TypeString, Str: value, ExpiresAt: expiresAt, cost: cost}
 	e.lastAccess.Store(s.clock().UnixNano())
 	sh.data[k] = e
@@ -372,7 +413,7 @@ func (s *Store) Delete(keys ...[]byte) int {
 				removed++
 			}
 			s.touchLocked(sh, k)
-			sh.usedBytes -= e.cost
+			s.addBytes(sh, -int64(e.cost))
 			delete(sh.data, k)
 		}
 	}
@@ -573,7 +614,7 @@ func (s *Store) Flush() int {
 		}
 		n += s.lenLocked(sh, now)
 		sh.data = make(map[string]*Entry)
-		sh.usedBytes = 0
+		s.clearBytes(sh)
 		sh.mu.Unlock()
 	}
 	return n
@@ -648,7 +689,7 @@ func (s *Store) removeExpired(keys []string) int {
 		e, ok := sh.data[k]
 		if ok && e.Expired(s.clock()) {
 			s.touchLocked(sh, k)
-			sh.usedBytes -= e.cost
+			s.addBytes(sh, -int64(e.cost))
 			delete(sh.data, k)
 			removed++
 		}
