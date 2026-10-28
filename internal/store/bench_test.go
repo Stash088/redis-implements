@@ -138,3 +138,28 @@ func BenchmarkStoreKeys(b *testing.B) {
 		st.Keys()
 	}
 }
+
+// BenchmarkHashSnapshot measures the cost of the snapshot the scan commands
+// walk: it is built once per traversal, so its cost is paid by the first
+// call of the traversal only.
+func BenchmarkHashSnapshot(b *testing.B) {
+	st := store.New()
+	fields := 100000
+	for i := 0; i < fields; i++ {
+		st.HashSet([]byte("h"), []byte("field"+strconv.Itoa(i)), []byte("value"))
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page, total, found, err := st.ScanHashPage([]byte("h"), 0, 100)
+		if err != nil || !found {
+			b.Fatalf("ScanHashPage: %v %v", err, found)
+		}
+		if len(page) != 100 || total != fields {
+			b.Fatalf("got %d fields (total %d)", len(page), total)
+		}
+		// The snapshot is dropped when the traversal reaches the end of
+		// the collection, so the next call builds it again.
+		st.ScanHashPage([]byte("h"), fields-100, 100)
+	}
+}
