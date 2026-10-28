@@ -681,10 +681,6 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		started := time.Now()
 		err = s.executeCommand(ctx)
 		s.sl.maybeAdd(args, c, time.Since(started))
-		if spec.write && len(args) > 1 {
-			// A write may have made a key available for a blocked client.
-			s.waiters.signal(args[1])
-		}
 		if ctx.wait != nil {
 			// A blocking command found nothing to pop: release the write
 			// lock (the Pub/Sub pump needs it) and wait for a key to become
@@ -749,8 +745,19 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 				c.writeMu.Unlock()
 				return
 			}
+			// The command has finished: a write may have made a key
+			// available for another blocked client. The signal comes
+			// after the command: a command that only started waiting has
+			// changed nothing.
+			if spec.write && len(args) > 1 {
+				s.waiters.signal(args[1])
+			}
 			c.writeMu.Unlock()
 			continue
+		}
+		if spec.write && len(args) > 1 {
+			// A write may have made a key available for a blocked client.
+			s.waiters.signal(args[1])
 		}
 		if suppress {
 			shadow.Flush()

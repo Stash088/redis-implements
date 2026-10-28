@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amir/redis-implements/internal/netloop"
@@ -90,8 +91,9 @@ type loopConn struct {
 	// queued is set when the connection is in the list of the connections
 	// whose replies are waiting to be sent.
 	queued bool
-	// kill is set when the connection must be closed.
-	kill bool
+	// kill is set when the connection must be closed. It is set from
+	// another goroutine (a slow subscriber), so it is atomic.
+	kill atomic.Bool
 	// closed is set when the connection is already closed.
 	closed bool
 	// blocked is set when the client waits for a key to become available.
@@ -384,10 +386,6 @@ func (l *loopState) loopCommand(c *loopConn, args [][]byte) {
 	started := time.Now()
 	err := s.executeCommand(ctx)
 	s.sl.maybeAdd(args, c.client, time.Since(started))
-	if spec.write && len(args) > 1 {
-		// A write may have made a key available for a blocked client.
-		s.waiters.signal(args[1])
-	}
 	if ctx.wait != nil {
 		// A blocking command found nothing to pop: the client waits for a
 		// key to become available, and the loop goes on with the other
@@ -396,9 +394,20 @@ func (l *loopState) loopCommand(c *loopConn, args [][]byte) {
 		ctx.wait = nil
 		if suppress {
 			shadow.Flush()
+		} else {
+			// Whatever the command wrote before it started waiting goes
+			// out now: the client is not answered until the command
+			// finishes, but the buffer must not hold a stale reply.
+			c.writer.Flush()
 		}
 		l.block(c, args, req)
 		return
+	}
+	if spec.write && len(args) > 1 {
+		// A write may have made a key available for a blocked client. The
+		// signal comes after the command: a command that only started
+		// waiting has changed nothing.
+		s.waiters.signal(args[1])
 	}
 	if suppress {
 		shadow.Flush()
@@ -640,7 +649,7 @@ func (l *loopState) flushWrites() {
 // flushed first: a client must not see the answer of a command that is not
 // in the log yet.
 func (l *loopState) flushConn(c *loopConn) {
-	if len(c.sink.buf) == 0 {
+	if c.closed || len(c.sink.buf) == 0 {
 		return
 	}
 	if s := l.srv; s.AOF != nil {
@@ -683,7 +692,7 @@ func (l *loopState) write(c *loopConn) {
 
 // watchRead starts watching the connection for reading.
 func (l *loopState) watchRead(c *loopConn) {
-	if c.reading || c.pending || c.blocked != nil || c.kill || c.closed {
+	if c.reading || c.pending || c.blocked != nil || c.kill.Load() || c.closed {
 		return
 	}
 	if err := l.poller.AddRead(c.fd); err == nil {
@@ -721,12 +730,10 @@ func (l *loopState) unwatchWrite(c *loopConn) {
 
 // markKill marks a connection to be closed.
 func (l *loopState) markKill(c *loopConn) {
-	l.mu.Lock()
-	if c.kill {
-		l.mu.Unlock()
+	if c.kill.Swap(true) {
 		return
 	}
-	c.kill = true
+	l.mu.Lock()
 	l.toClose = append(l.toClose, c)
 	l.mu.Unlock()
 }
