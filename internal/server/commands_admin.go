@@ -170,7 +170,7 @@ func (s *Server) configParams() [][2]string {
 		{"dbfilename", filepath.Base(s.DBPath)},
 		{"appendfilename", filepath.Base(s.AOFPath)},
 		{"dir", filepath.Dir(s.DBPath)},
-		{"port", strconv.Itoa(portOf(s.ln.Addr()))},
+		{"port", strconv.Itoa(s.port())},
 		{"slowlog-log-slower-than", strconv.FormatInt(thresh, 10)},
 		{"slowlog-max-len", strconv.Itoa(maxLen)},
 		{"requirepass", s.requirePass()},

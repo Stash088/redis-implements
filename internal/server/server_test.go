@@ -20,6 +20,24 @@ func startTestServer(t *testing.T) string {
 	return startTestServerStore(t, store.New(), true)
 }
 
+// startTestServerLoop runs a server that serves the connections with an event
+// loop instead of a goroutine each.
+func startTestServerLoop(t *testing.T) string {
+	t.Helper()
+	st := store.New()
+	exp := store.NewExpirer([]*store.Store{st}, 10*time.Millisecond)
+	exp.Start()
+	srv, err := server.NewLoop("127.0.0.1:0", []*store.Store{st})
+	if err != nil {
+		t.Fatalf("server.NewLoop: %v", err)
+	}
+	srv.SetLogger(log.New(io.Discard, "", 0))
+	srv.Expirer = exp
+	go srv.Serve()
+	t.Cleanup(func() { srv.Close() })
+	return srv.Addr().String()
+}
+
 // startTestServerStore runs a server against the given store. expirer enables
 // the background expiry loop; tests using a fake clock disable it.
 func startTestServerStore(t *testing.T, st *store.Store, expirer bool) string {
