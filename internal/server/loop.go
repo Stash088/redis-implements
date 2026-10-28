@@ -182,8 +182,10 @@ func (s *Server) serveLoop() error {
 		return err
 	}
 	defer func() {
-		// The loop has left: the listener is closed, so the server does
-		// not accept the connections any more.
+		// The loop has left: the connections are closed and the listener
+		// is closed too, so the server does not accept the connections any
+		// more.
+		l.closeAll()
 		l.mu.Lock()
 		l.finished = true
 		l.mu.Unlock()
@@ -736,6 +738,13 @@ func (l *loopState) closeKilled() {
 	l.toClose = nil
 	l.mu.Unlock()
 	for _, c := range list {
+		l.closeConn(c)
+	}
+}
+
+// closeAll closes every connection of the loop: the loop has left.
+func (l *loopState) closeAll() {
+	for _, c := range l.conns {
 		l.closeConn(c)
 	}
 }
