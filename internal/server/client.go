@@ -32,6 +32,16 @@ type client struct {
 	conn net.Conn
 	addr string
 
+	// loop is set when the client is served by the event loop: the loop
+	// writes the replies and the Pub/Sub messages itself, so the client
+	// has no socket and no pump goroutine.
+	loop *loopConn
+
+	// closeFn closes the connection of the client. It is set by the model
+	// that serves the client: the goroutine model closes the socket, the
+	// event loop marks the connection to be closed.
+	closeFn func()
+
 	// slot is the counter slot of the connection: the server spreads the
 	// counters it writes on the path of every command over the slots, so
 	// the connections do not share a cache line.
@@ -47,6 +57,8 @@ type client struct {
 	msgCh    chan resp.Value
 	done     chan struct{} // closed when the connection is gone; stops the pump
 	pumpOnce sync.Once
+	// doneOnce closes the done channel exactly once.
+	doneOnce sync.Once
 
 	// Database selected with SELECT.
 	db int
@@ -105,6 +117,7 @@ func newClient(conn net.Conn) *client {
 		watched:  make(map[string]struct{}),
 		created:  time.Now(),
 	}
+	c.closeFn = func() { conn.Close() }
 	c.proto.Store(2)
 	return c
 }
@@ -112,10 +125,28 @@ func newClient(conn net.Conn) *client {
 // Proto returns the protocol version negotiated with HELLO (2 or 3).
 func (c *client) Proto() int { return int(c.proto.Load()) }
 
+// closeConn closes the connection of the client.
+func (c *client) closeConn() {
+	if c.closeFn != nil {
+		c.closeFn()
+	}
+}
+
+// closeDone closes the channel that tells the other parts of the server that
+// the client is gone. It is safe to call it more than once.
+func (c *client) closeDone() {
+	c.doneOnce.Do(func() { close(c.done) })
+}
+
 // startPump launches the push-message goroutine once. It drains msgCh and
 // writes each message to the connection under writeMu; it exits when the
 // connection is closed (done) or a write fails.
 func (c *client) startPump(w *resp.Writer) {
+	if c.loop != nil {
+		// The event loop writes the messages itself: a pump goroutine
+		// would race with the loop for the writer.
+		return
+	}
 	c.pumpOnce.Do(func() {
 		go func() {
 			for {

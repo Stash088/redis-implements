@@ -193,10 +193,8 @@ func encodingName(t store.Type) string {
 
 // clientKill kills the client with the given id or address.
 func (s *Server) clientKill(id uint64, addr string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	killed := 0
-	for conn, c := range s.clients {
+	for _, c := range s.allClients() {
 		match := false
 		if id != 0 && c.id == id {
 			match = true
@@ -205,7 +203,7 @@ func (s *Server) clientKill(id uint64, addr string) (int, error) {
 			match = true
 		}
 		if match {
-			conn.Close()
+			c.closeConn()
 			killed++
 		}
 	}

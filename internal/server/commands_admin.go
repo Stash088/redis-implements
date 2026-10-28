@@ -330,14 +330,39 @@ func cmdClient(ctx *Ctx) error {
 		}
 		return ctx.W.WriteSimpleString("OK")
 	case "unblock":
-		if len(ctx.Args) < 2 {
-			wrongArgs(ctx.W, "client unblock")
-			return nil
-		}
-		return ctx.W.WriteError("ERR The client is not blocked")
+		return clientUnblock(ctx)
 	default:
 		return ctx.W.WriteError("ERR Unknown CLIENT subcommand or wrong number of arguments for '" + string(ctx.Args[1]) + "'")
 	}
+}
+
+// clientUnblock implements CLIENT UNBLOCK ID <id> | ADDR <addr>.
+//
+// The client that waits for a key is released: it is answered with an error
+// instead of the result of the command.
+func clientUnblock(ctx *Ctx) error {
+	if len(ctx.Args) != 4 {
+		wrongArgs(ctx.W, "client unblock")
+		return nil
+	}
+	var id uint64
+	addr := ""
+	switch strings.ToLower(string(ctx.Args[2])) {
+	case "id":
+		n, err := strconv.ParseUint(string(ctx.Args[3]), 10, 64)
+		if err != nil {
+			return ctx.W.WriteError("ERR client-id should be greater than 0")
+		}
+		id = n
+	case "addr":
+		addr = string(ctx.Args[3])
+	default:
+		return ctx.W.WriteError("ERR CLIENT UNBLOCK error: '" + string(ctx.Args[2]) + "'")
+	}
+	if ctx.Srv.waiters.unblock(id, addr) {
+		return ctx.W.WriteInteger(1)
+	}
+	return ctx.W.WriteInteger(0)
 }
 
 // clientReply implements CLIENT REPLY ON|OFF|SKIP.
@@ -403,12 +428,7 @@ func clientKill(ctx *Ctx) error {
 
 func writeClientList(ctx *Ctx) error {
 	s := ctx.Srv
-	s.mu.Lock()
-	clients := make([]*client, 0, len(s.clients))
-	for _, c := range s.clients {
-		clients = append(clients, c)
-	}
-	s.mu.Unlock()
+	clients := s.allClients()
 
 	now := time.Now()
 	var b strings.Builder

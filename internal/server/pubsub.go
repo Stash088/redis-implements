@@ -221,9 +221,16 @@ func (ps *PubSub) clientSubs(c *client) (channels, patterns int) {
 // Messages returns the total number of publish operations.
 func (ps *PubSub) Messages() uint64 { return ps.messages.Load() }
 
-// deliver queues the frame for the subscriber's pump goroutine. It returns
-// false when the queue is full and the slow subscriber was disconnected.
+// deliver queues the frame for the subscriber. It returns false when the
+// queue is full and the slow subscriber was disconnected.
+//
+// The goroutine model hands the frame to the pump goroutine of the client,
+// the event loop queues it in the connection: the loop writes it with the
+// next replies.
 func deliver(c *client, frame resp.Value) bool {
+	if c.loop != nil {
+		return c.loop.pushFrame(frame)
+	}
 	select {
 	case c.msgCh <- frame:
 		return true
