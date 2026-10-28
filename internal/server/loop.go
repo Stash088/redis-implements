@@ -145,11 +145,12 @@ func newLoopClient(s *Server, conn *loopConn) *client {
 		slot:     int(id % counterSlots),
 		channels: make(map[string]struct{}),
 		patterns: make(map[string]struct{}),
-		msgCh:    make(chan resp.Value, pubsubQueueSize),
-		done:     make(chan struct{}),
-		watched:  make(map[string]struct{}),
-		created:  time.Now(),
-		loop:     conn,
+		// The queue of the messages is not needed: the loop writes them
+		// itself, and the pump goroutine is not started.
+		done:    make(chan struct{}),
+		watched: make(map[string]struct{}),
+		created: time.Now(),
+		loop:    conn,
 	}
 	c.proto.Store(2)
 	if addr, err := netloop.PeerAddr(conn.fd); err == nil {
