@@ -126,16 +126,23 @@ type Server struct {
 	// connection, and a client of the event loop has no socket.
 	loopClients map[*client]struct{}
 
-	// loop is the state of the event loop: it is set when the loop starts
-	// and it is used to stop the loop when the server is closed.
-	loop *loopState
+	// loops are the states of the event loops: one loop serves the
+	// connections by itself, several loops share the port between them.
+	// They are set when the loops start and they are used to stop them
+	// when the server is closed.
+	loops []*loopState
 
-	// loopMode is set when the server serves the connections with an event
-	// loop instead of a goroutine each. loopAddr is the address it listens
-	// on and loopFD the descriptor of the listener.
+	// loopMode is set when the server serves the connections with event
+	// loops instead of a goroutine each. loopAddr is the address they
+	// listen on.
 	loopMode bool
 	loopAddr string
-	loopFD   int
+
+	// loopFDs are the descriptors of the listeners of the event loops, one
+	// per loop. They are created when the server is constructed: every
+	// loop takes its own when it starts, and the ones that are left are
+	// closed when the server is closed before the loops started.
+	loopFDs []int
 }
 
 // cacheLineSize is the size of a cache line on the usual architectures. A
@@ -415,18 +422,16 @@ func (s *Server) Close() error {
 	if s.ln != nil {
 		err = s.ln.Close()
 	}
-	if s.loopMode {
-		// The listener is closed by the loop: it closes it when it leaves.
-		// Closing it here would leave the loop with a dead descriptor.
-		if l := s.loopState(); l != nil {
-			l.stop()
-		} else {
-			s.closeLoopFD()
-		}
+	// The loops wake up, serve the rest of their queues and leave: they
+	// close their own connections and listeners. Closing a listener here
+	// would leave its loop with a dead descriptor.
+	loops := s.runningLoops()
+	if s.loopMode && len(loops) == 0 {
+		// The loops did not start yet: nobody owns the listeners, so
+		// they are closed here.
+		s.closeLoopFDs()
 	}
-	// The loop waits for the readiness of the sockets: it is woken, so it
-	// leaves and closes its connections.
-	if l := s.loopState(); l != nil {
+	for _, l := range loops {
 		l.stop()
 	}
 	s.mu.Lock()
@@ -438,37 +443,35 @@ func (s *Server) Close() error {
 	return err
 }
 
-// setLoop remembers the state of the event loop, so that the server can stop
-// it.
-func (s *Server) setLoop(l *loopState) {
+// setLoops remembers the states of the event loops, so that the server can
+// stop them.
+func (s *Server) setLoops(loops []*loopState) {
 	s.mu.Lock()
-	s.loop = l
+	s.loops = loops
 	s.mu.Unlock()
 }
 
-// loopState returns the state of the event loop, if it runs.
-func (s *Server) loopState() *loopState {
+// runningLoops returns the states of the event loops that are running (or
+// about to start): the list is empty before the loops started and after
+// they have all left.
+func (s *Server) runningLoops() []*loopState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loop
+	return s.loops
 }
 
-// closeLoopFD closes the listener of the event loop.
-func (s *Server) closeLoopFD() {
+// closeLoopFDs closes the listeners the loops did not take yet: the server
+// is closed before the loops started, so nobody owns the descriptors.
+func (s *Server) closeLoopFDs() {
 	s.mu.Lock()
-	fd := s.loopFD
-	s.loopFD = 0
+	fds := s.loopFDs
+	s.loopFDs = nil
 	s.mu.Unlock()
-	if fd > 0 {
-		netloop.Close(fd)
+	for _, fd := range fds {
+		if fd > 0 {
+			netloop.Close(fd)
+		}
 	}
-}
-
-// loopListener returns the descriptor of the listener of the event loop.
-func (s *Server) loopListener() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loopFD
 }
 
 // addLoopClient registers a client served by the event loop.
@@ -505,34 +508,56 @@ func (s *Server) countConn(n int64) {
 	atomic.AddInt64(&s.connsNum, n)
 }
 
-// NewLoop creates a Server that serves the connections with an event loop
+// NewLoop creates a Server that serves the connections with one event loop
 // instead of a goroutine each. The commands are executed by the same code as
 // the goroutine model; the difference is the I/O.
-//
-// The event loop does not serve the commands that need a goroutine of their
-// own yet (the blocking ones and the subscriptions): they answer with an
-// error.
 func NewLoop(addr string, dbs []*store.Store) (*Server, error) {
-	fd, err := netloop.Listen(addr)
-	if err != nil {
-		return nil, err
-	}
-	bound, err := netloop.Addr(fd)
-	if err != nil {
-		netloop.Close(fd)
-		return nil, err
+	return NewLoopN(addr, dbs, 1)
+}
+
+// NewLoopN creates a Server that serves the connections with n event loops
+// instead of a goroutine each. Every loop holds a listening socket of its
+// own: the sockets bind the same address with SO_REUSEPORT, and the kernel
+// spreads the connections between them, so the loops do not fight for one
+// accept queue. The commands are executed by the same code as the goroutine
+// model; the difference is the I/O.
+func NewLoopN(addr string, dbs []*store.Store, n int) (*Server, error) {
+	if n < 1 {
+		return nil, errors.New("the number of the event loops must be at least one")
 	}
 	s := newServer(dbs, nil)
 	s.loopMode = true
-	s.loopAddr = bound
-	s.loopFD = fd
+	// The sockets bind the same address. When the port is not chosen yet,
+	// the rest of the loops bind the port the first socket got: every bind
+	// of port 0 would get a port of its own.
+	bind := addr
+	for i := 0; i < n; i++ {
+		fd, err := netloop.ListenReusePort(bind)
+		if err != nil {
+			s.closeLoopFDs()
+			return nil, err
+		}
+		if i == 0 {
+			bound, err := netloop.Addr(fd)
+			if err != nil {
+				netloop.Close(fd)
+				s.closeLoopFDs()
+				return nil, err
+			}
+			s.loopAddr = bound
+			bind = bound
+		}
+		s.mu.Lock()
+		s.loopFDs = append(s.loopFDs, fd)
+		s.mu.Unlock()
+	}
 	return s, nil
 }
 
 // Serve accepts connections until the listener is closed.
 func (s *Server) Serve() error {
 	if s.loopMode {
-		return s.serveLoop()
+		return s.serveLoops()
 	}
 	for {
 		conn, err := s.ln.Accept()
