@@ -192,6 +192,11 @@ func (s *Server) serveLoops() error {
 		for _, l := range loops {
 			l.destroy()
 		}
+		// The listeners whose loops were not created (the start failed
+		// before their turn) are closed here: nobody owns them.
+		for _, fd := range fds[len(loops):] {
+			netloop.Close(fd)
+		}
 	}()
 	for _, fd := range fds {
 		l, err := newLoopState(s, fd)
