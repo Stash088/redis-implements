@@ -48,6 +48,19 @@ type waiter struct {
 	// err is the error the client is answered with when it is unblocked
 	// with CLIENT UNBLOCK.
 	err error
+
+	// The fields of a client blocked in WAIT/WAITAOF (replWait): it waits
+	// for the replicas to process woff bytes of the stream, num of them;
+	// the client is served when the ACKs arrive or the deadline expires.
+	// Such a waiter has no keys: it lives in the waitAck list of the
+	// replication state instead of the key registry.
+	replWait bool
+	woff     int64
+	num      int64
+	// waitAof marks a WAITAOF waiter: the reply is the [local, replicas]
+	// pair, and ackLocal carries the local part computed before the wait.
+	waitAof  bool
+	ackLocal int64
 }
 
 // wake signals the waiter that one of its keys may be available.
@@ -204,13 +217,23 @@ func (w *waiters) unblock(id uint64, addr string) bool {
 }
 
 // waitRequest describes a command that has to wait for a key to become
-// available.
+// available, or (replicasWait) for the replicas to catch up with the stream.
 type waitRequest struct {
 	keys    [][]byte
 	kind    popKind
 	timeout time.Duration
 	// dest is the destination key of a blocking move.
 	dest []byte
+
+	// replicasWait marks WAIT/WAITAOF: the wait is over when num replicas
+	// processed woff bytes of the stream. waitAof replies with the
+	// [local, replicas] pair, ackLocal holds the local part computed before
+	// the wait.
+	replicasWait bool
+	woff         int64
+	num          int64
+	waitAof      bool
+	ackLocal     int64
 }
 
 // waitForKeys registers the client as a waiter and waits until one of the keys

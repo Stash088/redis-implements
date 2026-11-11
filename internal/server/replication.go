@@ -171,10 +171,16 @@ type replState struct {
 	db      int // the database the stream is in; -1 re-emits SELECT
 	backlog *replBacklog
 	reps    map[*client]*replica
+	// waitAcks holds the clients blocked in WAIT (their command is retried
+	// when the replicas caught up); waitMu guards the list.
+	waitMu   sync.Mutex
+	waitAcks []*waiter
 
-	// link is set when the server is a replica. Its state and the time of
-	// the last word from the master are read by ROLE and INFO.
-	link   *replicaClient
+	// link is set when the server is a replica. It is read by every write
+	// command (the READONLY check) and by the ping loop, so it lives behind
+	// an atomic pointer; its state and the time of the last word from the
+	// master are read by ROLE and INFO.
+	link   atomic.Pointer[replicaClient]
 	state  atomic.Int32 // linkState of the link
 	lastIO atomic.Int64 // unix seconds of the last reply of the master
 }
@@ -190,7 +196,7 @@ func newReplState(backlogSize int) *replState {
 }
 
 // isReplica reports whether the server replicates from a master.
-func (s *Server) isReplica() bool { return s.repl.link != nil }
+func (s *Server) isReplica() bool { return s.repl.link.Load() != nil }
 
 // roleName returns the role the server reports about itself ("master" or
 // "slave", the spelling Redis uses).
@@ -205,16 +211,11 @@ func (s *Server) roleName() string {
 // client starts and syncs in the background. The dataset is replaced when
 // the synchronization completes, like in Redis.
 func (s *Server) setReplicaOf(host string, port int, auth string) {
-	s.repl.mu.Lock()
-	old := s.repl.link
-	s.repl.mu.Unlock()
-	if old != nil {
+	if old := s.repl.link.Swap(nil); old != nil {
 		old.stopAndWait()
 	}
 	rc := newReplicaClient(s, host, port, auth)
-	s.repl.mu.Lock()
-	s.repl.link = rc
-	s.repl.mu.Unlock()
+	s.repl.link.Store(rc)
 	rc.start()
 }
 
@@ -228,19 +229,15 @@ func (s *Server) SetReplicaOf(host string, port int, auth string) {
 // and the replication history shifts (id2 remembers the inherited history,
 // so the replicas of the former master may still partially resync).
 func (s *Server) clearReplicaOf() {
-	s.repl.mu.Lock()
-	old := s.repl.link
-	s.repl.link = nil
-	s.repl.mu.Unlock()
-	if old != nil {
+	if old := s.repl.link.Swap(nil); old != nil {
 		old.stopAndWait()
 	}
 	r := s.repl
 	r.mu.Lock()
 	r.id2 = r.id
 	r.id2Off = r.offset.Load() + 1
-	r.mu.Unlock()
 	r.id = newReplID()
+	r.mu.Unlock()
 }
 
 // appendStream feeds one propagated command into the replication stream: the
@@ -256,7 +253,7 @@ func (s *Server) clearReplicaOf() {
 // misses a command that was appended before its cut.
 func (s *Server) appendStream(args [][]byte, db int) {
 	r := s.repl
-	if r.link != nil {
+	if r.link.Load() != nil {
 		// The server is a replica: it proxies nothing (writes are rejected
 		// anyway) and must not grow its own stream accounting.
 		return
@@ -307,6 +304,14 @@ func (s *Server) unregisterReplica(c *client) {
 	s.repl.mu.Unlock()
 }
 
+// registerReplicaPartial registers a replica that continues an existing
+// stream: the database of the stream stays as it is.
+func (s *Server) registerReplicaPartial(c *client, rep *replica) {
+	s.repl.mu.Lock()
+	s.repl.reps[c] = rep
+	s.repl.mu.Unlock()
+}
+
 // tryPartial reports whether the server can continue the stream of a replica
 // from the given offset: the replication ID must match this history (or the
 // previous one, up to its offset) and the bytes must still be in the
@@ -338,6 +343,52 @@ func (s *Server) countAcks(off int64) int {
 		}
 	}
 	return n
+}
+
+// addWaitAck registers a client blocked in WAIT: an ACK of a replica wakes
+// the ones that caught up.
+func (s *Server) addWaitAck(wt *waiter) {
+	s.repl.waitMu.Lock()
+	s.repl.waitAcks = append(s.repl.waitAcks, wt)
+	s.repl.waitMu.Unlock()
+}
+
+// removeWaitAck drops a blocked WAIT client (it is served or gone).
+func (s *Server) removeWaitAck(wt *waiter) {
+	s.repl.waitMu.Lock()
+	for i, other := range s.repl.waitAcks {
+		if other == wt {
+			s.repl.waitAcks = append(s.repl.waitAcks[:i], s.repl.waitAcks[i+1:]...)
+			break
+		}
+	}
+	s.repl.waitMu.Unlock()
+}
+
+// wakeAckWaiters wakes the WAIT clients whose replicas caught up. It runs
+// after every REPLCONF ACK.
+func (s *Server) wakeAckWaiters() {
+	s.repl.waitMu.Lock()
+	var ready []*waiter
+	kept := s.repl.waitAcks[:0]
+	for _, wt := range s.repl.waitAcks {
+		if s.countAcks(wt.woff) >= int(wt.num) {
+			ready = append(ready, wt)
+		} else {
+			kept = append(kept, wt)
+		}
+	}
+	s.repl.waitAcks = kept
+	s.repl.waitMu.Unlock()
+	for _, wt := range ready {
+		wt.wake()
+	}
+}
+
+// requestAcks feeds a REPLCONF GETACK into the stream: the replicas report
+// their offsets right away, so WAIT does not wait for the heartbeat.
+func (s *Server) requestAcks() {
+	s.appendStream([][]byte{[]byte("replconf"), []byte("getack")}, -1)
 }
 
 // replicaAddrs returns the connected replicas for ROLE and INFO: the
@@ -381,14 +432,11 @@ type replicaAddr struct {
 // the state of the link and the time of the last word from it. ok is false
 // when the server is a master.
 func (s *Server) masterInfo() (host string, port int, st linkState, lastIO int64, ok bool) {
-	r := s.repl
-	r.mu.Lock()
-	link := r.link
-	r.mu.Unlock()
+	link := s.repl.link.Load()
 	if link == nil {
 		return "", 0, 0, 0, false
 	}
-	return link.host, link.port, linkState(r.state.Load()), r.lastIO.Load(), true
+	return link.host, link.port, linkState(s.repl.state.Load()), s.repl.lastIO.Load(), true
 }
 
 // splitHostPort splits "host:port". The whole address comes back as the

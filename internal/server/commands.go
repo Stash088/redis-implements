@@ -226,6 +226,8 @@ func (s *Server) registerCommands() {
 	s.reg("SYNC", 1, cmdSync)
 	s.reg("REPLCONF", -1, cmdReplConf)
 	s.reg("ROLE", 1, cmdRole)
+	s.reg("WAIT", 3, cmdWait)
+	s.reg("WAITAOF", 4, cmdWaitAof)
 
 	// Database commands. SELECT only changes the connection's database, so it
 	// propagates itself to the AOF and does not dirty the dataset.
@@ -618,8 +620,8 @@ func (s *Server) writeReplicationInfo(b *strings.Builder) {
 	r.mu.Lock()
 	backlog := r.backlog
 	id, id2, id2Off := r.id, r.id2, r.id2Off
-	link := r.link
 	r.mu.Unlock()
+	link := r.link.Load()
 
 	fmt.Fprintf(b, "# Replication\r\n")
 	fmt.Fprintf(b, "role:%s\r\n", s.roleName())

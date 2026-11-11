@@ -484,11 +484,7 @@ func (s *Server) Close() error {
 	// The link to the master of this server (when it is a replica) is torn
 	// down before the listener: the replica client would otherwise retry
 	// while the server is going away.
-	s.repl.mu.Lock()
-	link := s.repl.link
-	s.repl.link = nil
-	s.repl.mu.Unlock()
-	if link != nil {
+	if link := s.repl.link.Swap(nil); link != nil {
 		link.stopAndWait()
 	}
 	if s.Expirer != nil {

@@ -546,11 +546,32 @@ func (l *loopState) loopProtocolError(c *loopConn, err error) {
 
 // block puts a client that waits for a key into the waiting list: the loop
 // goes on with the other connections, and the command is run again when the
-// key may have become available.
+// key may have become available. A client that waits for the replicas
+// (WAIT/WAITAOF) parks the same way; its waiter lives in the waitAck list of
+// the replication state instead of the key registry.
 func (l *loopState) block(c *loopConn, args [][]byte, req *waitRequest) {
 	bl := &loopBlock{args: copyArgs(args)}
 	if req.timeout > 0 {
 		bl.deadline = time.Now().Add(req.timeout)
+	}
+	if req.replicasWait {
+		bl.waiter = &waiter{
+			c:        c.client,
+			ready:    make(chan struct{}),
+			done:     make(chan struct{}),
+			loop:     c,
+			replWait: true,
+			woff:     req.woff,
+			num:      req.num,
+			waitAof:  req.waitAof,
+			ackLocal: req.ackLocal,
+		}
+		c.blocked = bl
+		l.blocked[c] = struct{}{}
+		l.srv.addWaitAck(bl.waiter)
+		// The client waits: the connection is not read until it is woken up.
+		l.unwatchRead(c)
+		return
 	}
 	keys := copyArgs(req.keys)
 	var dest []byte
@@ -600,7 +621,11 @@ func (l *loopState) serveBlocked(c *loopConn) {
 	}
 	// The waiter leaves the registry: the client registers again if it has
 	// to wait more.
-	l.srv.waiters.remove(bl.waiter)
+	if bl.waiter.replWait {
+		l.srv.removeWaitAck(bl.waiter)
+	} else {
+		l.srv.waiters.remove(bl.waiter)
+	}
 	delete(l.blocked, c)
 	c.blocked = nil
 	// The connection is read again.
@@ -627,11 +652,23 @@ func (l *loopState) expireBlocked() {
 		if bl == nil || bl.deadline.IsZero() || now.Before(bl.deadline) {
 			continue
 		}
-		l.srv.waiters.remove(bl.waiter)
+		if bl.waiter.replWait {
+			// WAIT/WAITAOF answers with what it has: the number of the
+			// replicas that caught up (the local count of WAITAOF was
+			// computed before the wait).
+			l.srv.removeWaitAck(bl.waiter)
+			if bl.waiter.waitAof {
+				c.writer.WriteValue(waitAofReply(bl.waiter.ackLocal, int64(l.srv.countAcks(bl.waiter.woff))))
+			} else {
+				c.writer.WriteInteger(int64(l.srv.countAcks(bl.waiter.woff)))
+			}
+		} else {
+			l.srv.waiters.remove(bl.waiter)
+			// The timeout expired: the answer is a null array.
+			c.writer.WriteNullArray()
+		}
 		delete(l.blocked, c)
 		c.blocked = nil
-		// The timeout expired: the answer is a null array.
-		c.writer.WriteNullArray()
 		c.writer.Flush()
 		l.markWrite(c)
 		// The connection is read again.
@@ -867,7 +904,11 @@ func (l *loopState) closeConn(c *loopConn) {
 	netloop.Close(c.fd)
 	delete(l.conns, c.fd)
 	if c.blocked != nil {
-		l.srv.waiters.remove(c.blocked.waiter)
+		if c.blocked.waiter.replWait {
+			l.srv.removeWaitAck(c.blocked.waiter)
+		} else {
+			l.srv.waiters.remove(c.blocked.waiter)
+		}
 		delete(l.blocked, c)
 		c.blocked = nil
 	}
