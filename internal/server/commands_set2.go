@@ -93,11 +93,14 @@ func cmdSPop(ctx *Ctx) error {
 		}
 		return ctx.W.WriteNullBulk()
 	}
+	// The journal holds the effect of the pop: the replay must not pick
+	// other random members, so the popped ones are recorded as a removal
+	// (the way Redis replicates an SPOP as SREM operations).
+	effect := append([][]byte{[]byte("srem"), ctx.Args[1]}, members...)
+	ctx.propagate(effect)
 	if !hasCount {
-		ctx.propagateCmd()
 		return ctx.W.WriteBulkString(members[0])
 	}
-	ctx.propagateCmd()
 	return writeMemberList(ctx, members)
 }
 

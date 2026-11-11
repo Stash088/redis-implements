@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amir/redis-implements/internal/resp"
 	"github.com/amir/redis-implements/internal/store"
 )
 
@@ -51,6 +50,10 @@ type Appender struct {
 	// flushEvery is the interval of the background flush. Zero writes the
 	// commands only when the buffer is full.
 	flushEvery time.Duration
+	// curDB is the database the journal is in: when a command of another
+	// database is appended, a SELECT is written before it. -1 forces the
+	// SELECT (a fresh file and a rewrite do not have a database yet).
+	curDB int
 }
 
 // DefaultAOFBufferSize is the size of the AOF write buffer.
@@ -75,6 +78,7 @@ func OpenAppender(path string, policy FsyncPolicy) (*Appender, error) {
 		done:       make(chan struct{}),
 		bufLimit:   DefaultAOFBufferSize,
 		flushEvery: DefaultAOFFlushInterval,
+		curDB:      -1,
 	}
 	go a.background()
 	return a, nil
@@ -106,7 +110,36 @@ func (a *Appender) SetBufferSize(n int) {
 func (a *Appender) Append(args [][]byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.appendLocked(args)
+	return a.appendFlushLocked()
+}
+
+// AppendInDB appends a command of the given database. The journal keeps the
+// database of the last appended command: a SELECT is written before the
+// command when it belongs to another one, so the replay follows the same
+// order of databases the live server had. This replaces the SELECT records
+// of the client connections: the journal is one ordered stream, and its
+// database is the one of the last written command.
+func (a *Appender) AppendInDB(db int, args [][]byte) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if db != a.curDB {
+		a.appendLocked([][]byte{[]byte("select"), []byte(strconv.Itoa(db))})
+		a.curDB = db
+	}
+	a.appendLocked(args)
+	return a.appendFlushLocked()
+}
+
+// appendLocked encodes one command into the buffer. The caller must hold
+// a.mu.
+func (a *Appender) appendLocked(args [][]byte) {
 	a.buf = appendCommand(a.buf, args)
+}
+
+// appendFlushLocked writes the buffer out per the fsync policy. The caller
+// must hold a.mu.
+func (a *Appender) appendFlushLocked() error {
 	if a.policy == FsyncAlways {
 		if err := a.flushLocked(); err != nil {
 			return err
@@ -260,7 +293,10 @@ func RewriteForAOF(args [][]byte, now time.Time) [][][]byte {
 					}
 					i++
 				}
-			case equalFoldASCII(args[i], "NX"), equalFoldASCII(args[i], "XX"):
+			case equalFoldASCII(args[i], "NX"), equalFoldASCII(args[i], "XX"),
+				equalFoldASCII(args[i], "KEEPTTL"):
+				// KEEPTTL is state-relevant: without it the replay would drop
+				// the expiry of the key.
 				flags = append(flags, upperASCII(args[i]))
 			}
 		}
@@ -374,56 +410,6 @@ func upperASCII(b []byte) []byte {
 	return out
 }
 
-// LoadAOF replays a RESP command log into the given stores. A SELECT command
-// switches the target database, like Redis does. A truncated trailing command
-// is tolerated; other read errors abort the load.
-func LoadAOF(r io.Reader, stores []*store.Store) error {
-	rd := resp.NewReader(r)
-	cur := 0
-	for {
-		v, err := rd.ReadValue()
-		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				return nil // clean end or truncated tail
-			}
-			return fmt.Errorf("persist: aof read: %w", err)
-		}
-		if v.Kind != resp.KindArray || v.IsNull {
-			return fmt.Errorf("persist: aof contains a non-command frame")
-		}
-		args := make([][]byte, 0, len(v.Array))
-		for i := range v.Array {
-			el := v.Array[i]
-			if el.Kind != resp.KindBulkString || el.IsNull {
-				return fmt.Errorf("persist: aof command arguments must be bulk strings")
-			}
-			args = append(args, el.Str)
-		}
-		if cur >= len(stores) {
-			cur = 0
-		}
-		if len(args) > 0 && strings.EqualFold(string(args[0]), "flushall") {
-			for _, st := range stores {
-				st.Flush()
-			}
-			continue
-		}
-		if len(args) > 0 && strings.EqualFold(string(args[0]), "select") {
-			n, err := strconv.Atoi(string(args[1]))
-			if err != nil {
-				return fmt.Errorf("persist: aof: bad SELECT index")
-			}
-			if n >= 0 && n < len(stores) {
-				cur = n
-			}
-			continue
-		}
-		if err := applyAOFCommand(stores[cur], args); err != nil {
-			return err
-		}
-	}
-}
-
 // applyAOFCommand applies one replayed command to the store. Store-level errors
 // (e.g. WRONGTYPE) are ignored because replay is expected to reproduce the
 // exact original execution, including failures.
@@ -495,13 +481,43 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		if len(args) < 3 {
 			return nil
 		}
-		var nx, xx bool
+		// The flags of SET (and of the commands propagated in its shape):
+		// NX/XX gate the write, KEEPTTL keeps the expiry of the key, and
+		// the expiry options arm a TTL. Redis propagates the relative
+		// expiry options (EX/PX) of SET as an absolute PXAT, so the replay
+		// reproduces the same moment of expiry.
+		var nx, xx, keepttl bool
+		var exSec, pxMs, exAtSec, pxAtMs int64
 		for i := 3; i < len(args); i++ {
 			switch strings.ToUpper(string(args[i])) {
 			case "NX":
 				nx = true
 			case "XX":
 				xx = true
+			case "KEEPTTL":
+				keepttl = true
+			case "GET":
+				// The reply carries the old value; the state is the same.
+			case "EX":
+				if i+1 < len(args) {
+					exSec, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
+					i++
+				}
+			case "PX":
+				if i+1 < len(args) {
+					pxMs, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
+					i++
+				}
+			case "EXAT":
+				if i+1 < len(args) {
+					exAtSec, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
+					i++
+				}
+			case "PXAT":
+				if i+1 < len(args) {
+					pxAtMs, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
+					i++
+				}
 			}
 		}
 		if nx && st.Exists(key()) == 1 {
@@ -510,7 +526,30 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 		if xx && st.Exists(key()) == 0 {
 			return nil
 		}
-		st.SetString(key(), args[2])
+		if keepttl {
+			// The value is replaced and the remaining time of the key is
+			// armed again (the store drops the TTL with the entry).
+			if d, ok := st.TTL(key()); ok && d > 0 {
+				st.SetString(key(), args[2])
+				st.Expire(key(), d) //nolint:errcheck
+			} else {
+				st.SetString(key(), args[2])
+			}
+		} else {
+			// Without KEEPTTL the SET replaces the entry: the TTL of the
+			// old value is gone.
+			st.SetString(key(), args[2])
+		}
+		switch {
+		case pxAtMs != 0:
+			st.ExpireAt(key(), time.UnixMilli(pxAtMs)) //nolint:errcheck
+		case exAtSec != 0:
+			st.ExpireAt(key(), time.Unix(exAtSec, 0)) //nolint:errcheck
+		case pxMs > 0:
+			st.Expire(key(), time.Duration(pxMs)*time.Millisecond) //nolint:errcheck
+		case exSec > 0:
+			st.Expire(key(), time.Duration(exSec)*time.Second) //nolint:errcheck
+		}
 	case "append":
 		if len(args) == 3 {
 			st.Append(key(), args[2])
@@ -660,14 +699,18 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 			st.SetMove(key(), args[2], args[3]) //nolint:errcheck
 		}
 	case "spop":
-		if len(args) >= 2 {
-			count := 0
-			if len(args) == 3 {
-				if n, err := strconv.Atoi(string(args[2])); err == nil {
-					count = n
-				}
+		// The command reaches the journal either as SPOP key [count] (the
+		// journals of the older servers) or as SPOP key member... (the
+		// effect the command propagates now, the way Redis propagates
+		// SREM operations).
+		if len(args) > 2 {
+			if n, err := strconv.Atoi(string(args[2])); err == nil && len(args) == 3 {
+				st.SetPop(key(), n) //nolint:errcheck
+			} else {
+				st.SetRem(key(), args[2:]...) //nolint:errcheck
 			}
-			st.SetPop(key(), count) //nolint:errcheck
+		} else {
+			st.SetPop(key(), 0) //nolint:errcheck
 		}
 	case "sdiffstore", "sinterstore", "sunionstore":
 		if len(args) >= 3 {
@@ -1035,6 +1078,9 @@ func (a *Appender) Rewrite(gen func(io.Writer) error) error {
 		return err
 	}
 	a.buf = a.buf[:0]
+	// The rewritten journal starts with FLUSHALL and its own SELECT records:
+	// the next appended command is preceded by a SELECT again.
+	a.curDB = -1
 	var buf bytes.Buffer
 	if err := gen(&buf); err != nil {
 		return err

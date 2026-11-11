@@ -93,7 +93,8 @@ func TestCommandRegistryMemoryAddSet(t *testing.T) {
 //
 // The blocking commands belong here as well: their handler writes the effect
 // of the pop (LPOP, RPOP, LMOVE, ZPOPMIN) instead of the command itself, so
-// the replay does not wait for a key.
+// the replay does not wait for a key. SPOP writes the members it popped as a
+// removal: the replay must not pick other random members.
 func TestCommandRegistryAofSelf(t *testing.T) {
 	cmds := newTestRegistry()
 	want := map[string]bool{
@@ -101,6 +102,7 @@ func TestCommandRegistryAofSelf(t *testing.T) {
 		"getdel": true, "getset": true, "mset": true, "msetnx": true,
 		"psetex": true, "setex": true, "setnx": true, "setrange": true,
 		"blpop": true, "brpop": true, "blmove": true, "bzpopmin": true, "bzpopmax": true,
+		"spop": true,
 	}
 	for name, spec := range cmds {
 		if spec.aofSelf != want[name] {

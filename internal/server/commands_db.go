@@ -5,8 +5,9 @@ import (
 )
 
 // cmdSelect switches the connection to another database. The choice is
-// per-connection, like Redis does, and it is recorded in the AOF so the
-// replay writes the commands to the same database.
+// per-connection, like Redis does. The journal and the replication stream
+// track their own database: the next command of this connection is preceded
+// by a SELECT when its database differs from the one the streams are in.
 func cmdSelect(ctx *Ctx) error {
 	if len(ctx.Args) != 2 {
 		wrongArgs(ctx.W, "select")
@@ -19,11 +20,7 @@ func cmdSelect(ctx *Ctx) error {
 	if n < 0 || n >= ctx.Srv.DBCount() {
 		return ctx.W.WriteError("ERR DB index is out of range")
 	}
-	if ctx.Client.db != n {
-		// The AOF must know which database the following commands belong to.
-		ctx.propagate([][]byte{[]byte("select"), []byte(strconv.Itoa(n))})
-		ctx.Client.db = n
-	}
+	ctx.Client.db = n
 	return ctx.W.WriteSimpleString("OK")
 }
 
@@ -33,7 +30,7 @@ func cmdFlushAll(ctx *Ctx) error {
 		wrongArgs(ctx.W, "flushall")
 		return nil
 	}
-	for _, db := range ctx.Srv.dbs {
+	for _, db := range ctx.Srv.dbsList() {
 		db.Flush()
 	}
 	return ctx.W.WriteSimpleString("OK")
@@ -46,7 +43,7 @@ func (s *Server) evictCycle(maxBytes int64) int {
 	policy := s.maxMemoryPolicyName()
 	samples := int(s.maxMemorySamples.Load())
 	evicted := 0
-	for _, db := range s.dbs {
+	for _, db := range s.dbsList() {
 		total := s.usedBytes()
 		if int64(total) <= maxBytes {
 			break

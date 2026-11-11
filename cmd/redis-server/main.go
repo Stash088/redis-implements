@@ -92,6 +92,20 @@ func main() {
 	srv.SetSlowlog(cfg.SlowlogSlowerThan, cfg.SlowlogMaxLen)
 	srv.SetAppendFsync(cfg.AppendFsync)
 	srv.SetBufferSizes(cfg.BufReadSize, cfg.BufWriteSize)
+	if cfg.ReplBacklogSize > 0 {
+		srv.SetReplBacklogSize(cfg.ReplBacklogSize)
+	}
+	if cfg.MasterAuth != "" {
+		srv.SetMasterAuth(cfg.MasterAuth)
+	}
+	if cfg.ReplicaOf != "" {
+		host, port, err := config.ParseReplicaOf(cfg.ReplicaOf)
+		if err != nil {
+			log.Fatalf("replicaof: %v", err)
+		}
+		log.Printf("server: replicating from %s:%d", host, port)
+		srv.SetReplicaOf(host, port, cfg.MasterAuth)
+	}
 	log.Printf("server: listening on %s (dir=%s)", srv.Addr(), cfg.Dir)
 
 	if cfg.PprofPort > 0 {

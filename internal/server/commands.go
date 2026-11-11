@@ -144,7 +144,9 @@ func (s *Server) registerCommands() {
 	// Set commands (second batch).
 	s.reg("SINTERCARD", -3, cmdSInterCard)
 	s.regW("SMOVE", 4, cmdSMove)
-	s.regW("SPOP", -2, cmdSPop)
+	// SPOP propagates the members it popped (as a removal): the replay must
+	// not pick other random members.
+	s.regWS("SPOP", -2, cmdSPop)
 	s.reg("SRANDMEMBER", -2, cmdSRandMember)
 	s.reg("SMISMEMBER", -3, cmdSMIsMember)
 	s.reg("SDIFF", -2, cmdSDiff)
@@ -213,6 +215,17 @@ func (s *Server) registerCommands() {
 
 	// Authentication.
 	s.reg("AUTH", -2, cmdAuth)
+
+	// Replication. REPLICAOF changes the role of the server, but not the
+	// dataset (the dataset is replaced when the synchronization completes),
+	// so the commands are read-only for the dispatch: they are not
+	// propagated and they pass the READONLY check of a replica.
+	s.reg("REPLICAOF", 3, cmdReplicaOf)
+	s.reg("SLAVEOF", 3, cmdReplicaOf)
+	s.reg("PSYNC", 3, cmdPSync)
+	s.reg("SYNC", 1, cmdSync)
+	s.reg("REPLCONF", -1, cmdReplConf)
+	s.reg("ROLE", 1, cmdRole)
 
 	// Database commands. SELECT only changes the connection's database, so it
 	// propagates itself to the AOF and does not dirty the dataset.
@@ -541,38 +554,106 @@ func cmdQuit(ctx *Ctx) error {
 
 func cmdInfo(ctx *Ctx) error {
 	s := ctx.Srv
+	// INFO [section]: an empty section (or default) means all of them.
+	section := ""
+	if len(ctx.Args) > 1 {
+		section = strings.ToLower(string(ctx.Args[1]))
+	}
+	match := func(name string) bool {
+		return section == "" || section == "default" || section == name
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Server\r\n")
-	fmt.Fprintf(&b, "redis_version:1.0.0\r\n")
-	fmt.Fprintf(&b, "redis_mode:standalone\r\n")
-	fmt.Fprintf(&b, "os:%s\r\n", runtime.GOOS)
-	fmt.Fprintf(&b, "tcp_port:%d\r\n", s.port())
-	fmt.Fprintf(&b, "uptime_in_seconds:%d\r\n", int64(time.Since(s.started).Seconds()))
-	b.WriteString("\r\n")
-	fmt.Fprintf(&b, "# Clients\r\n")
-	fmt.Fprintf(&b, "connected_clients:%d\r\n", s.connectedClients())
-	fmt.Fprintf(&b, "blocked_clients:%d\r\n", s.waiters.count())
-	subCh, subPat := s.PubSub.Counts()
-	fmt.Fprintf(&b, "pubsub_channels:%d\r\n", subCh)
-	fmt.Fprintf(&b, "pubsub_patterns:%d\r\n", subPat)
-	b.WriteString("\r\n")
-	fmt.Fprintf(&b, "# Memory\r\n")
-	used := ctx.Store.UsedBytes()
-	fmt.Fprintf(&b, "used_memory:%d\r\n", used)
-	fmt.Fprintf(&b, "maxmemory:%d\r\n", s.maxMemory.Load())
-	fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.maxMemoryPolicyName())
-	b.WriteString("\r\n")
-	fmt.Fprintf(&b, "# Stats\r\n")
-	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.receivedTotal())
-	fmt.Fprintf(&b, "evicted_keys:%d\r\n", s.evicted.Load())
-	fmt.Fprintf(&b, "pubsub_messages:%d\r\n", s.PubSub.Messages())
-	b.WriteString("\r\n")
-	fmt.Fprintf(&b, "# Keyspace\r\n")
-	for i, db := range s.dbs {
-		keys, expires := db.Stats()
-		fmt.Fprintf(&b, "db%d:keys=%d,expires=%d,avg_ttl=0\r\n", i, keys, expires)
+	if match("server") {
+		fmt.Fprintf(&b, "# Server\r\n")
+		fmt.Fprintf(&b, "redis_version:%s\r\n", serverVersion)
+		fmt.Fprintf(&b, "redis_mode:standalone\r\n")
+		fmt.Fprintf(&b, "os:%s\r\n", runtime.GOOS)
+		fmt.Fprintf(&b, "tcp_port:%d\r\n", s.port())
+		fmt.Fprintf(&b, "uptime_in_seconds:%d\r\n", int64(time.Since(s.started).Seconds()))
+		b.WriteString("\r\n")
+	}
+	if match("clients") {
+		fmt.Fprintf(&b, "# Clients\r\n")
+		fmt.Fprintf(&b, "connected_clients:%d\r\n", s.connectedClients())
+		fmt.Fprintf(&b, "blocked_clients:%d\r\n", s.waiters.count())
+		subCh, subPat := s.PubSub.Counts()
+		fmt.Fprintf(&b, "pubsub_channels:%d\r\n", subCh)
+		fmt.Fprintf(&b, "pubsub_patterns:%d\r\n", subPat)
+		b.WriteString("\r\n")
+	}
+	if match("memory") {
+		fmt.Fprintf(&b, "# Memory\r\n")
+		used := ctx.Store.UsedBytes()
+		fmt.Fprintf(&b, "used_memory:%d\r\n", used)
+		fmt.Fprintf(&b, "maxmemory:%d\r\n", s.maxMemory.Load())
+		fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.maxMemoryPolicyName())
+		b.WriteString("\r\n")
+	}
+	if match("stats") {
+		fmt.Fprintf(&b, "# Stats\r\n")
+		fmt.Fprintf(&b, "total_commands_processed:%d\r\n", s.receivedTotal())
+		fmt.Fprintf(&b, "evicted_keys:%d\r\n", s.evicted.Load())
+		fmt.Fprintf(&b, "pubsub_messages:%d\r\n", s.PubSub.Messages())
+		b.WriteString("\r\n")
+	}
+	if match("replication") {
+		s.writeReplicationInfo(&b)
+		b.WriteString("\r\n")
+	}
+	if match("keyspace") {
+		fmt.Fprintf(&b, "# Keyspace\r\n")
+		for i, db := range s.dbsList() {
+			keys, expires := db.Stats()
+			fmt.Fprintf(&b, "db%d:keys=%d,expires=%d,avg_ttl=0\r\n", i, keys, expires)
+		}
 	}
 	return ctx.W.WriteBulkString([]byte(b.String()))
+}
+
+// writeReplicationInfo writes the "# Replication" section of INFO: the role,
+// the master link (for a replica) or the connected replicas (for a master)
+// and the replication IDs and offsets.
+func (s *Server) writeReplicationInfo(b *strings.Builder) {
+	r := s.repl
+	r.mu.Lock()
+	backlog := r.backlog
+	id, id2, id2Off := r.id, r.id2, r.id2Off
+	link := r.link
+	r.mu.Unlock()
+
+	fmt.Fprintf(b, "# Replication\r\n")
+	fmt.Fprintf(b, "role:%s\r\n", s.roleName())
+	if link != nil {
+		host, port, st, lastIO, _ := s.masterInfo()
+		fmt.Fprintf(b, "master_host:%s\r\n", host)
+		fmt.Fprintf(b, "master_port:%d\r\n", port)
+		fmt.Fprintf(b, "master_link_status:%s\r\n", st.status())
+		fmt.Fprintf(b, "master_last_io_seconds_ago:%d\r\n", time.Now().Unix()-lastIO)
+		syncing := 0
+		if st == linkSync {
+			syncing = 1
+		}
+		fmt.Fprintf(b, "master_sync_in_progress:%d\r\n", syncing)
+		fmt.Fprintf(b, "slave_read_repl_offset:%d\r\n", r.offset.Load())
+		fmt.Fprintf(b, "slave_repl_offset:%d\r\n", r.offset.Load())
+		fmt.Fprintf(b, "slave_priority:100\r\n")
+		fmt.Fprintf(b, "slave_read_only:1\r\n")
+	}
+	reps := s.replicaAddrs()
+	fmt.Fprintf(b, "connected_slaves:%d\r\n", len(reps))
+	for i, rep := range reps {
+		fmt.Fprintf(b, "slave%d:ip=%s,port=%d,state=online,offset=%d,lag=%d\r\n",
+			i, rep.host, rep.port, rep.offset, rep.lag)
+	}
+	fmt.Fprintf(b, "master_failover_state:no-failover\r\n")
+	fmt.Fprintf(b, "master_replid:%s\r\n", id)
+	fmt.Fprintf(b, "master_replid2:%s\r\n", id2)
+	fmt.Fprintf(b, "master_repl_offset:%d\r\n", r.offset.Load())
+	fmt.Fprintf(b, "second_repl_offset:%d\r\n", id2Off)
+	fmt.Fprintf(b, "repl_backlog_active:1\r\n")
+	fmt.Fprintf(b, "repl_backlog_size:%d\r\n", backlog.size)
+	fmt.Fprintf(b, "repl_backlog_first_byte_offset:%d\r\n", backlog.firstOffset())
+	fmt.Fprintf(b, "repl_backlog_histlen:%d\r\n", backlog.histlen())
 }
 
 func (s *Server) connectedClients() int64 {

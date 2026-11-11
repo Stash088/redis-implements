@@ -78,6 +78,14 @@ func TestAOFWritesEveryCommandOnce(t *testing.T) {
 	addr, aofPath, a := startAOFServer(t, dir)
 	c := newClient(t, addr)
 
+	// The journal is fresh: it does not have a database yet, so the first
+	// command is preceded by a SELECT. Prime the journal, so every case
+	// below sees exactly its own commands.
+	c.ok("SET", "primed", "1")
+	if err := a.Flush(); err != nil {
+		t.Fatalf("flush the aof: %v", err)
+	}
+
 	cases := []aofCase{
 		{[]string{"SET", "k", "v"}, []string{"set"}},
 		{[]string{"SETNX", "k2", "v"}, []string{"setnx"}},
@@ -110,7 +118,8 @@ func TestAOFWritesEveryCommandOnce(t *testing.T) {
 		{[]string{"LTRIM", "l", "0", "0"}, []string{"ltrim"}},
 		{[]string{"SADD", "s", "m"}, []string{"sadd"}},
 		{[]string{"SREM", "s", "m"}, []string{"srem"}},
-		{[]string{"SPOP", "s"}, []string{"spop"}},
+		{[]string{"SADD", "s", "m2"}, []string{"sadd"}},
+		{[]string{"SPOP", "s"}, []string{"srem"}},
 		{[]string{"ZADD", "z", "1", "m"}, []string{"zadd"}},
 		{[]string{"ZINCRBY", "z", "1", "m"}, []string{"zincrby"}},
 		{[]string{"ZREM", "z", "m"}, []string{"zrem"}},
@@ -230,7 +239,7 @@ func TestAOFFlushesWithoutAWrite(t *testing.T) {
 	if err := a.Flush(); err != nil {
 		t.Fatalf("flush the aof: %v", err)
 	}
-	if names := aofCommands(t, aofPath); len(names) != 1 {
-		t.Fatalf("the aof holds %v, want one command", names)
+	if names := aofCommands(t, aofPath); len(names) != 2 || names[0] != "select" {
+		t.Fatalf("the aof holds %v, want the initial SELECT and one command", names)
 	}
 }
