@@ -174,3 +174,32 @@ func TestParseBadFlagDoesNotPanic(t *testing.T) {
 		}
 	}
 }
+
+// TestParseLoopsDefaults checks that one event loop is the default.
+func TestParseLoopsDefaults(t *testing.T) {
+	c, err := Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Loops != 1 {
+		t.Errorf("the default number of the loops is %d, want 1", c.Loops)
+	}
+}
+
+// TestParseLoopsFlags checks the --loops values and that several loops need
+// the loop model: the goroutine model has no loops.
+func TestParseLoopsFlags(t *testing.T) {
+	c, err := Parse([]string{"--io-mode", "loop", "--loops", "4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Loops != 4 {
+		t.Errorf("--loops 4: got %d, want 4", c.Loops)
+	}
+	if _, err := Parse([]string{"--io-mode", "goroutine", "--loops", "4"}); err == nil {
+		t.Errorf("--loops with the goroutine model: expected an error")
+	}
+	if _, err := Parse([]string{"--loops", "0"}); err == nil {
+		t.Errorf("--loops 0: expected an error")
+	}
+}

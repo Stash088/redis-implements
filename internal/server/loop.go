@@ -58,9 +58,10 @@ type loopState struct {
 	// messages of the subscribers and the woken up clients.
 	mu sync.Mutex
 	// stopped is set when the server is closed, finished when the loop has
-	// left.
-	stopped  bool
-	finished bool
+	// left, destroyed when the loop released its poller and its listener.
+	stopped   bool
+	finished  bool
+	destroyed bool
 }
 
 // loopConn is the state of a connection served by the event loop.
@@ -165,40 +166,112 @@ func newLoopClient(s *Server, conn *loopConn) *client {
 	return c
 }
 
-// serveLoop serves the connections with one event loop.
-func (s *Server) serveLoop() error {
+// serveLoops runs the event loops: one goroutine per loop, every loop
+// accepts and serves the connections of its own listener. The loops share
+// nothing but the server: the kernel spreads the connections between the
+// listeners, and the queues that may be filled from another loop (the
+// Pub/Sub messages, the woken up clients) are under the mutex of the loop
+// that serves them.
+//
+// It returns when every loop has left. The first error stops the rest of
+// the loops.
+func (s *Server) serveLoops() error {
+	s.mu.Lock()
+	fds := s.loopFDs
+	s.loopFDs = nil
+	s.mu.Unlock()
+
+	// The states are created before the goroutines: from this moment the
+	// server can stop every loop, even the ones whose goroutine has not
+	// started yet.
+	loops := make([]*loopState, 0, len(fds))
+	defer func() {
+		// A loop that did not run (the start failed before its turn, or
+		// it is stopping right now) is released here. The call is safe
+		// on the loops that ran: they released their own resources.
+		for _, l := range loops {
+			l.destroy()
+		}
+		// The listeners whose loops were not created (the start failed
+		// before their turn) are closed here: nobody owns them.
+		for _, fd := range fds[len(loops):] {
+			netloop.Close(fd)
+		}
+	}()
+	for _, fd := range fds {
+		l, err := newLoopState(s, fd)
+		if err != nil {
+			return err
+		}
+		loops = append(loops, l)
+	}
+	s.setLoops(loops)
+
+	errs := make(chan error, len(loops))
+	var wg sync.WaitGroup
+	for _, l := range loops {
+		wg.Add(1)
+		go func(l *loopState) {
+			defer wg.Done()
+			errs <- l.run()
+		}(l)
+	}
+	// A loop that leaves with an error stops the rest: the server cannot
+	// serve without all of its listeners.
+	err := <-errs
+	for _, l := range loops {
+		l.stop()
+	}
+	wg.Wait()
+	s.setLoops(nil)
+	// The loops leave with nil when the server is stopped: the error of
+	// the run is reported even when another loop left first.
+	for err == nil && len(errs) > 0 {
+		err = <-errs
+	}
+	return err
+}
+
+// newLoopState creates the state of one event loop over the given listener.
+func newLoopState(s *Server, ln int) (*loopState, error) {
 	p, err := netloop.NewPoller()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer p.Close()
-	l := &loopState{
+	return &loopState{
 		srv:     s,
 		poller:  p,
+		ln:      ln,
 		conns:   make(map[int]*loopConn),
 		blocked: make(map[*loopConn]struct{}),
-	}
-	l.ln = s.loopListener()
-	s.setLoop(l)
-	ln := l.ln
-	if err := p.AddRead(ln); err != nil {
+	}, nil
+}
+
+// run serves the connections of the loop until the loop is stopped. The loop
+// owns the listener: it closes the listener when it leaves.
+func (l *loopState) run() error {
+	defer func() {
+		// The loop has left: the connections and the listener are closed,
+		// so the server does not accept the connections any more.
+		l.closeAll()
+		l.markFinished()
+		if l.ln > 0 {
+			netloop.Close(l.ln)
+			l.ln = 0
+		}
+		l.poller.Close()
+		l.mu.Lock()
+		l.destroyed = true
+		l.mu.Unlock()
+	}()
+	if err := l.poller.AddRead(l.ln); err != nil {
 		return err
 	}
-	defer func() {
-		// The loop has left: the connections are closed and the listener
-		// is closed too, so the server does not accept the connections any
-		// more.
-		l.closeAll()
-		l.mu.Lock()
-		l.finished = true
-		l.mu.Unlock()
-		s.closeLoopFD()
-	}()
 	for {
 		if l.isStopped() {
 			return nil
 		}
-		events, err := p.Wait(l.nextTimeout())
+		events, err := l.poller.Wait(l.nextTimeout())
 		if err != nil {
 			if l.isStopped() {
 				return nil
@@ -212,6 +285,31 @@ func (s *Server) serveLoop() error {
 		l.flushWrites()
 		l.closeKilled()
 	}
+}
+
+// destroy releases the resources of a loop that did not run: the poller and
+// the listener. It is safe on a loop that has left: the loop released its
+// resources and marked itself destroyed.
+func (l *loopState) destroy() {
+	l.mu.Lock()
+	if l.destroyed {
+		l.mu.Unlock()
+		return
+	}
+	l.destroyed = true
+	l.mu.Unlock()
+	l.poller.Close()
+	if l.ln > 0 {
+		netloop.Close(l.ln)
+		l.ln = 0
+	}
+}
+
+// markFinished remembers that the loop has left.
+func (l *loopState) markFinished() {
+	l.mu.Lock()
+	l.finished = true
+	l.mu.Unlock()
 }
 
 // isStopped reports whether the server was closed.

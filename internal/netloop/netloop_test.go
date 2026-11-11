@@ -152,6 +152,72 @@ func TestPollerTimeout(t *testing.T) {
 	}
 }
 
+// TestListenReusePort checks that several sockets may bind the same address
+// with SO_REUSEPORT and the connections are accepted exactly once: every
+// connection is given to one of the sockets, not to each of them.
+func TestListenReusePort(t *testing.T) {
+	first, err := netloop.ListenReusePort("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr, err := netloop.Addr(first)
+	if err != nil {
+		t.Fatalf("addr: %v", err)
+	}
+	defer netloop.Close(first)
+	// The second socket binds the port the first one got: the sharing
+	// works only between the sockets that set the option themselves.
+	second, err := netloop.ListenReusePort(addr)
+	if err != nil {
+		t.Fatalf("the second bind of %s: %v", addr, err)
+	}
+	defer netloop.Close(second)
+
+	const conns = 32
+	accepted := make(chan int, conns)
+	stop := time.Now().Add(5 * time.Second)
+	// The listeners are in the non-blocking mode: the accept is retried
+	// until the deadline, because it reports "would block" when the kernel
+	// has not given this socket a connection yet.
+	for id, ln := range map[int]int{0: first, 1: second} {
+		go func(id, ln int) {
+			for time.Now().Before(stop) {
+				fd, err := netloop.Accept(ln)
+				if err != nil {
+					if netloop.WouldBlock(err) {
+						time.Sleep(200 * time.Microsecond)
+						continue
+					}
+					return
+				}
+				accepted <- id
+				netloop.Close(fd)
+			}
+		}(id, ln)
+	}
+	for i := 0; i < conns; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		conn.Close()
+	}
+	// Every connection is accepted by one of the sockets: the kernel
+	// spreads them, but none is given twice and none is lost.
+	counts := make([]int, 2)
+	for i := 0; i < conns; i++ {
+		select {
+		case id := <-accepted:
+			counts[id]++
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d connections were accepted", i, conns)
+		}
+	}
+	if counts[0]+counts[1] != conns {
+		t.Fatalf("accepted %d connections, want %d", counts[0]+counts[1], conns)
+	}
+}
+
 // TestPollerNotify checks that a notification wakes a poller that waits: the
 // event may come from another goroutine, not from a socket.
 func TestPollerNotify(t *testing.T) {

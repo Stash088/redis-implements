@@ -106,8 +106,10 @@ func (p *epollPoller) Wait(timeout time.Duration) ([]Event, error) {
 	}
 }
 
-// listen creates a listening TCP socket in the non-blocking mode.
-func listen(addr string) (int, error) {
+// listen creates a listening TCP socket in the non-blocking mode. reusePort
+// sets SO_REUSEPORT before the bind: several sockets may bind the same
+// address, and the kernel spreads the connections between them.
+func listen(addr string, reusePort bool) (int, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return -1, err
@@ -140,6 +142,12 @@ func listen(addr string) (int, error) {
 	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
 		syscall.Close(fd)
 		return -1, err
+	}
+	if reusePort {
+		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
+			syscall.Close(fd)
+			return -1, err
+		}
 	}
 	if err := syscall.Bind(fd, sockaddr); err != nil {
 		syscall.Close(fd)

@@ -54,7 +54,20 @@ type Poller interface {
 
 // Listen creates a listening TCP socket in the non-blocking mode.
 func Listen(addr string) (int, error) {
-	return listen(addr)
+	return listen(addr, false)
+}
+
+// ListenReusePort creates a listening TCP socket that shares its address with
+// the other sockets: the kernel spreads the incoming connections between all
+// the sockets that bound the same address with SO_REUSEPORT. It lets several
+// event loops accept on one port: every loop holds a socket of its own, and
+// the connections do not fight for one accept queue.
+//
+// The sharing works only between the sockets that set the option themselves:
+// a socket that bound the address without SO_REUSEPORT keeps the port for
+// itself, and the reuse-port sockets get the "address in use" error.
+func ListenReusePort(addr string) (int, error) {
+	return listen(addr, true)
 }
 
 // Accept accepts a connection of the listener. It returns an error when there

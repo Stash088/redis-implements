@@ -54,6 +54,12 @@ type Config struct {
 	// connections with one event loop, "goroutine" serves every connection
 	// with a goroutine of its own.
 	IOMode string
+
+	// Loops is the number of the event loops that serve the connections in
+	// the "loop" mode: every loop binds the port with SO_REUSEPORT and the
+	// kernel spreads the connections between the loops. One is the default:
+	// several loops pay off when the clients and the cores are many.
+	Loops int
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -148,6 +154,7 @@ func Parse(args []string) (Config, error) {
 		SlowlogMaxLen:     128,
 		Databases:         16,
 		IOMode:            "loop",
+		Loops:             1,
 	}
 	fs.StringVar(&c.Host, "host", c.Host, "interface to bind to")
 	fs.IntVar(&c.Port, "port", c.Port, "TCP port to listen on")
@@ -170,6 +177,7 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&c.BufReadSize, "buf-read-size", c.BufReadSize, "size of the socket read buffer of a connection, in bytes (0 uses the default)")
 	fs.IntVar(&c.BufWriteSize, "buf-write-size", c.BufWriteSize, "size of the socket write buffer of a connection, in bytes (0 uses the default)")
 	fs.StringVar(&c.IOMode, "io-mode", c.IOMode, "model of the input and output: loop (one event loop) or goroutine (a goroutine per connection)")
+	fs.IntVar(&c.Loops, "loops", c.Loops, "number of the event loops in the loop mode: every loop binds the port with SO_REUSEPORT and the kernel spreads the connections between them")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -192,6 +200,12 @@ func Parse(args []string) (Config, error) {
 	case "goroutine", "loop":
 	default:
 		return Config{}, fmt.Errorf("invalid --io-mode %q (want goroutine or loop)", c.IOMode)
+	}
+	if c.Loops < 1 {
+		return Config{}, fmt.Errorf("invalid --loops %d (want at least one)", c.Loops)
+	}
+	if c.Loops > 1 && c.IOMode != "loop" {
+		return Config{}, fmt.Errorf("--loops needs --io-mode loop (the goroutine model has no loops)")
 	}
 	switch c.MaxMemoryPolicy {
 	case "noeviction", "allkeys-lru", "volatile-lru", "allkeys-random", "volatile-random", "volatile-ttl":

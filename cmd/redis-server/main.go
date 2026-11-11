@@ -73,7 +73,7 @@ func main() {
 
 	var srv *server.Server
 	if cfg.IOMode == "loop" {
-		srv, err = server.NewLoop(cfg.Addr(), dbs)
+		srv, err = server.NewLoopN(cfg.Addr(), dbs, cfg.Loops)
 	} else {
 		srv, err = server.New(cfg.Addr(), dbs)
 	}
