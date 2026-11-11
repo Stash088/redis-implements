@@ -158,6 +158,36 @@ RESP `PING` через busybox `nc`.
 | Транзакции | `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH` |
 | Сервер / диагностика | `CONFIG GET/SET`, `CLIENT ID/LIST/INFO/SETNAME/GETNAME/KILL/REPLY`, `SLOWLOG GET/LEN/RESET`, `COMMAND COUNT/INFO/LIST/DOCS`, `RESET`, `TIME`, `LASTSAVE`, `RANDOMKEY`, `TOUCH`, `UNLINK`, `DEBUG` |
 | Pub/Sub (диагностика) | `PUBSUB CHANNELS/NUMSUB/NUMPAT` |
+| Репликация | `REPLICAOF`/`SLAVEOF` (`NO ONE` — промоушен), `REPLCONF`, `PSYNC`, `SYNC`, `ROLE`, `WAIT`, `WAITAOF` |
+
+## Репликация
+
+Сервер может быть и мастером, и репликой; протокол совместим с настоящим
+Redis 8.2 в обе стороны (наша реплика синкается с реальным мастером,
+реальная реплика — с нашим мастером; проверено тестами
+`internal/server/interop_replication_test.go`).
+
+```bash
+# Мастер
+go run ./cmd/redis-server --port 6379 --requirepass secret
+
+# Реплика: полный sync (RDB), затем живой стрим команд;
+# при обрыве — частичный resync из backlog
+go run ./cmd/redis-server --port 6380 --replicaof "127.0.0.1 6379" --masterauth secret
+
+redis-cli -p 6380 ROLE          # ["slave", "127.0.0.1", 6379, "connected", <offset>]
+redis-cli -p 6380 INFO replication
+redis-cli -p 6379 SET k v
+redis-cli -p 6380 GET k         # -> "v" (реплика отвечает -READONLY на записи)
+redis-cli -p 6379 WAIT 1 2000   # -> 1, когда реплика догнала стрим
+redis-cli -p 6380 REPLICAOF NO ONE   # промоушен в мастера
+```
+
+`--repl-backlog-size <байты>` (по умолчанию 1 МБ) задаёт, сколько стрима
+реплика может догнать без полной синхронизации. Реплика принимает только
+чтение (`-READONLY` на записи). Ограничения: RDB для полного sync собирается
+в памяти; chained-репликация (реплика от реплики) не поддерживается — см.
+[docs/HANDOFF.md](docs/HANDOFF.md), §4.
 
 ## Pub/Sub и транзакции
 

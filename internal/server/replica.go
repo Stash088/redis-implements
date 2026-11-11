@@ -66,6 +66,9 @@ func newReplicaClient(s *Server, host string, port int, auth string) *replicaCli
 		auth: auth,
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
+		// The first handshake asks for a full resynchronization.
+		id:  "?",
+		off: -1,
 	}
 }
 
@@ -125,12 +128,8 @@ func (rc *replicaClient) run() {
 // setLinkState records the state of the link for ROLE and INFO. A link that
 // was replaced (REPLICAOF to another master) leaves the state alone.
 func (rc *replicaClient) setLinkState(st linkState) {
-	r := rc.srv.repl
-	r.mu.Lock()
-	cur := r.link
-	r.mu.Unlock()
-	if cur == rc {
-		r.state.Store(int32(st))
+	if rc.srv.repl.link.Load() == rc {
+		rc.srv.repl.state.Store(int32(st))
 	}
 }
 

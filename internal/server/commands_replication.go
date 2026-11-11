@@ -39,6 +39,7 @@ func cmdReplConf(ctx *Ctx) error {
 	if len(ctx.Args)%2 == 0 {
 		return ctx.W.WriteError("ERR syntax error")
 	}
+	s := ctx.Srv
 	for i := 1; i < len(ctx.Args); i += 2 {
 		opt := string(ctx.Args[i])
 		value := string(ctx.Args[i+1])
@@ -66,6 +67,7 @@ func cmdReplConf(ctx *Ctx) error {
 				}
 				rep.ackAt.Store(time.Now().Unix())
 			}
+			s.wakeAckWaiters()
 			return nil
 		case "getack":
 			// A replica of ours forwards the request of its master. We have
@@ -79,7 +81,9 @@ func cmdReplConf(ctx *Ctx) error {
 }
 
 // cmdPSync implements PSYNC: the replica asks to continue a stream it knows
-// (its replication ID and offset) or to start a fresh one ("?" and -1).
+// (its replication ID and offset) or to start a fresh one ("?" and -1). A
+// history the server still holds in the backlog continues from the offset;
+// anything else starts a full resynchronization.
 func cmdPSync(ctx *Ctx) error {
 	if len(ctx.Args) != 3 {
 		wrongArgs(ctx.W, "psync")
@@ -116,8 +120,34 @@ func (s *Server) startReplicaStream(ctx *Ctx, id string, off int64, announce boo
 	if s.isReplica() {
 		return ctx.W.WriteError("NOMASTERLINK Can't PSYNC while the server replicates from a master")
 	}
-	_ = id
-	_ = off
+
+	// The partial resync: the replication ID matches this history and the
+	// bytes from the offset are still in the backlog. The backlog bytes are
+	// copied under the stream mutex: the appends reuse the buffer.
+	if id != "?" {
+		if replay, ok := s.tryPartial(id, off); ok {
+			rep := &replica{c: ctx.Client, port: ctx.Client.replPort}
+			rep.ackOff.Store(off)
+			rep.ackAt.Store(time.Now().Unix())
+			s.registerReplicaPartial(ctx.Client, rep)
+			ctx.Client.repl = rep
+			if announce {
+				ctx.W.WriteRaw([]byte("+CONTINUE " + s.repl.id + "\r\n"))
+			}
+			// The stream continues with the bytes the replica missed: the
+			// frames of the commands that propagate from now on are queued
+			// behind them.
+			ctx.W.WriteRaw(replay)
+			ctx.Client.startPump(ctx.W)
+			s.Logger.Printf("replica: partial resync accepted for %s from offset %d (%d bytes of backlog)",
+				ctx.Client.addr, off, len(replay))
+			return nil
+		}
+		if id != "?" {
+			s.Logger.Printf("replica: partial resync refused for %s (id %s, offset %d)",
+				ctx.Client.addr, id, off)
+		}
+	}
 
 	// The full resync: the dataset is serialized under the stream mutex (see
 	// emitLocked), so the snapshot and the cut offset are atomic with
@@ -210,4 +240,160 @@ func cmdRole(ctx *Ctx) error {
 		}
 	}
 	return nil
+}
+
+// cmdWait implements WAIT: the client waits until numreplicas replicas
+// processed its last write (the position of the stream it left the client
+// at), or until the timeout in milliseconds expires. A timeout of 0 waits
+// forever. The reply is the number of replicas that caught up, also on a
+// timeout, like in Redis.
+func cmdWait(ctx *Ctx) error {
+	if len(ctx.Args) != 3 {
+		wrongArgs(ctx.W, "wait")
+		return nil
+	}
+	if ctx.Srv.isReplica() {
+		return ctx.W.WriteError("WAIT cannot be used with replica instances. Please also note that since Redis 4.0 if a replica is configured to be writable (which is not the default) writes to replicas are just local and are not propagated.")
+	}
+	num, err := strconv.ParseInt(string(ctx.Args[1]), 10, 64)
+	if err != nil {
+		return ctx.W.WriteError("ERR value is not an integer or out of range")
+	}
+	timeoutMs, err := strconv.ParseInt(string(ctx.Args[2]), 10, 64)
+	if err != nil || timeoutMs < 0 {
+		return ctx.W.WriteError("ERR timeout is not an integer or out of range")
+	}
+	s := ctx.Srv
+	woff := ctx.Client.woff.Load()
+	if n := int64(s.countAcks(woff)); n >= num {
+		return ctx.W.WriteInteger(n)
+	}
+	// The replicas report their offsets right away instead of waiting for
+	// the heartbeat.
+	s.requestAcks()
+
+	var deadline time.Time
+	if timeoutMs > 0 {
+		deadline = time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	}
+	if ctx.Client.loop != nil {
+		// The event loop parks the connection and retries the command when
+		// the replicas caught up or the deadline expired (like the blocking
+		// commands do).
+		ctx.wait = &waitRequest{
+			replicasWait: true,
+			woff:         woff,
+			num:          num,
+			timeout:      time.Until(deadline),
+		}
+		return nil
+	}
+	// The goroutine model: the connection waits in its own goroutine.
+	t := time.NewTicker(200 * time.Microsecond)
+	defer t.Stop()
+	for {
+		if n := int64(s.countAcks(woff)); n >= num {
+			return ctx.W.WriteInteger(n)
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return ctx.W.WriteInteger(int64(s.countAcks(woff)))
+		}
+		select {
+		case <-ctx.Client.done:
+			return ctx.W.WriteInteger(int64(s.countAcks(woff)))
+		case <-t.C:
+		}
+	}
+}
+
+// cmdWaitAof implements WAITAOF: it waits until the local journal (numlocal)
+// and numreplicas replicas are durable through the client's last write.
+//
+// The local journal is flushed and fsynced right here, so numlocal is
+// satisfied synchronously. The replicas are counted by the offset they
+// processed (REPLCONF ACK): the fsync state of their journals is not
+// tracked yet, so "durable on the replica" means "applied by the replica"
+// — a documented approximation until the replicas report their own journal
+// offsets (REPLCONF ACK FACK).
+func cmdWaitAof(ctx *Ctx) error {
+	if len(ctx.Args) != 4 {
+		wrongArgs(ctx.W, "waitaof")
+		return nil
+	}
+	if ctx.Srv.isReplica() {
+		return ctx.W.WriteError("WAITAOF cannot be used with replica instances. Please also note that writes to replicas are just local and are not propagated.")
+	}
+	numLocal, err := strconv.Atoi(string(ctx.Args[1]))
+	if err != nil || numLocal < 0 || numLocal > 1 {
+		return ctx.W.WriteError("ERR value is not an integer or out of range")
+	}
+	num, err := strconv.ParseInt(string(ctx.Args[2]), 10, 64)
+	if err != nil || num < 0 {
+		return ctx.W.WriteError("ERR value is not an integer or out of range")
+	}
+	timeoutMs, err := strconv.ParseInt(string(ctx.Args[3]), 10, 64)
+	if err != nil || timeoutMs < 0 {
+		return ctx.W.WriteError("ERR timeout is not an integer or out of range")
+	}
+	s := ctx.Srv
+	if numLocal > 0 && s.AOF == nil {
+		return ctx.W.WriteError("WAITAOF cannot be used when numlocal is set but appendonly is disabled.")
+	}
+	woff := ctx.Client.woff.Load()
+	// The local part is satisfied here: the commands are already in the
+	// buffer of the journal (it is written out before the replies leave),
+	// the fsync makes them durable.
+	ackLocal := int64(numLocal)
+	if numLocal > 0 {
+		if err := s.AOF.Sync(); err != nil {
+			return ctx.W.WriteError("ERR " + err.Error())
+		}
+	}
+	askReplicas := num > 0
+	if !askReplicas {
+		return ctx.W.WriteValue(waitAofReply(ackLocal, 0))
+	}
+	if n := int64(s.countAcks(woff)); n >= num {
+		return ctx.W.WriteValue(waitAofReply(ackLocal, n))
+	}
+	s.requestAcks()
+
+	var deadline time.Time
+	if timeoutMs > 0 {
+		deadline = time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	}
+	if ctx.Client.loop != nil {
+		// Park until the replicas catch up or the deadline expires. The
+		// parked retry runs WAITAOF again; the local fsync above is
+		// idempotent and the reply keeps the local count it computed.
+		ctx.wait = &waitRequest{
+			replicasWait: true,
+			woff:         woff,
+			num:          num,
+			timeout:      time.Until(deadline),
+			waitAof:      true,
+			ackLocal:     ackLocal,
+		}
+		return nil
+	}
+	t := time.NewTicker(200 * time.Microsecond)
+	defer t.Stop()
+	for {
+		if n := int64(s.countAcks(woff)); n >= num {
+			return ctx.W.WriteValue(waitAofReply(ackLocal, n))
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return ctx.W.WriteValue(waitAofReply(ackLocal, int64(s.countAcks(woff))))
+		}
+		select {
+		case <-ctx.Client.done:
+			return ctx.W.WriteValue(waitAofReply(ackLocal, int64(s.countAcks(woff))))
+		case <-t.C:
+		}
+	}
+}
+
+// waitAofReply builds the [local, replicas] reply of WAITAOF.
+func waitAofReply(local, replicas int64) resp.Value {
+	return resp.NewArray([]resp.Value{resp.NewInteger(local), resp.NewInteger(replicas)})
 }
