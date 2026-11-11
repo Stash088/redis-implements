@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -60,6 +61,17 @@ type Config struct {
 	// kernel spreads the connections between the loops. One is the default:
 	// several loops pay off when the clients and the cores are many.
 	Loops int
+
+	// ReplicaOf is "host port": when set, the server starts as a replica of
+	// the master and replaces its dataset with the one of the master.
+	ReplicaOf string
+
+	// MasterAuth is the password of the master (when it requires one).
+	MasterAuth string
+
+	// ReplBacklogSize is the capacity of the replication backlog: the number
+	// of the stream bytes a reconnecting replica may catch up with.
+	ReplBacklogSize int
 }
 
 // maxMemoryFlag parses --maxmemory accepting Redis-style size suffixes
@@ -139,6 +151,34 @@ func (c Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
+// ParseReplicaOf parses the value of --replicaof: "host port" (the spelling
+// of Redis, quoted in the shell) or "host:port".
+func ParseReplicaOf(s string) (host string, port int, err error) {
+	t := strings.TrimSpace(s)
+	fields := strings.Fields(t)
+	switch {
+	case len(fields) == 2:
+		host = fields[0]
+		port, err = strconv.Atoi(fields[1])
+	case strings.Count(t, ":") == 1:
+		var portStr string
+		host, portStr, err = net.SplitHostPort(t)
+		if err != nil {
+			return "", 0, err
+		}
+		port, err = strconv.Atoi(portStr)
+	default:
+		return "", 0, fmt.Errorf("want \"host port\" or host:port")
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	if host == "" || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid master address %q", s)
+	}
+	return host, port, nil
+}
+
 // Parse reads configuration from command-line flags.
 func Parse(args []string) (Config, error) {
 	fs := flag.NewFlagSet("redis-server", flag.ContinueOnError)
@@ -178,6 +218,10 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&c.BufWriteSize, "buf-write-size", c.BufWriteSize, "size of the socket write buffer of a connection, in bytes (0 uses the default)")
 	fs.StringVar(&c.IOMode, "io-mode", c.IOMode, "model of the input and output: loop (one event loop) or goroutine (a goroutine per connection)")
 	fs.IntVar(&c.Loops, "loops", c.Loops, "number of the event loops in the loop mode: every loop binds the port with SO_REUSEPORT and the kernel spreads the connections between them")
+	fs.StringVar(&c.ReplicaOf, "replicaof", c.ReplicaOf, "\"host port\" (or host:port): start as a replica of the master")
+	fs.StringVar(&c.ReplicaOf, "slaveof", c.ReplicaOf, "an alias of --replicaof")
+	fs.StringVar(&c.MasterAuth, "masterauth", c.MasterAuth, "password of the master (when it requires one)")
+	fs.IntVar(&c.ReplBacklogSize, "repl-backlog-size", c.ReplBacklogSize, "capacity of the replication backlog in bytes")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -206,6 +250,14 @@ func Parse(args []string) (Config, error) {
 	}
 	if c.Loops > 1 && c.IOMode != "loop" {
 		return Config{}, fmt.Errorf("--loops needs --io-mode loop (the goroutine model has no loops)")
+	}
+	if c.ReplicaOf != "" {
+		if _, _, err := ParseReplicaOf(c.ReplicaOf); err != nil {
+			return Config{}, fmt.Errorf("invalid --replicaof %q (want \"host port\" or host:port)", c.ReplicaOf)
+		}
+	}
+	if c.ReplBacklogSize < 0 {
+		return Config{}, fmt.Errorf("invalid --repl-backlog-size %d", c.ReplBacklogSize)
 	}
 	switch c.MaxMemoryPolicy {
 	case "noeviction", "allkeys-lru", "volatile-lru", "allkeys-random", "volatile-random", "volatile-ttl":

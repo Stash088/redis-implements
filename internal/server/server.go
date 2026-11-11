@@ -65,7 +65,11 @@ type Handler func(*Ctx) error
 // keyspaces (the Redis databases). Each client selects its current database
 // with SELECT; commands always run against the client's database.
 type Server struct {
-	dbs       []*store.Store
+	// dbsRef holds the slice of the databases. Every command reads it and
+	// SWAPDB replaces it: the slice lives behind an atomic pointer, so the
+	// commands see the old or the new slice as a whole and never a
+	// half-swapped pair.
+	dbsRef    atomic.Pointer[[]*store.Store]
 	Expirer   *store.Expirer
 	AOF       *persist.Appender
 	PubSub    *PubSub
@@ -93,6 +97,10 @@ type Server struct {
 	dirty    [counterSlots]counter // writes since the last save
 	lastSave atomic.Int64          // unix seconds of the last successful save
 	saveStop chan struct{}
+	// saveStopOnce guards the close of saveStop: Close may run twice (the
+	// graceful shutdown and the final cleanup), and a closed channel must
+	// not close again.
+	saveStopOnce sync.Once
 
 	// Memory management (see evict.go in store): --maxmemory and policy.
 	maxMemory        atomic.Int64
@@ -108,6 +116,17 @@ type Server struct {
 
 	// Password clients must authenticate with (empty disables it).
 	requirepass atomic.Pointer[string]
+
+	// Password this server authenticates to its own master with (when it is
+	// a replica).
+	masterAuth atomic.Pointer[string]
+
+	// Replication: the stream, the backlog, the replicas and the master
+	// link. replStop stops the background goroutines of the replication
+	// (guarded by replStopOnce: Close may run twice).
+	repl        *replState
+	replStop    chan struct{}
+	replStopOne sync.Once
 
 	// Server metadata for INFO/CONFIG (set at startup, read-only afterwards).
 	appendFsync string
@@ -205,23 +224,40 @@ func (s *Server) resetDirty() {
 	}
 }
 
-// propagate appends args to the AOF when one is enabled.
+// propagate writes one normalized command to the journal (when it is on)
+// and feeds it to the replication stream: the backlog and the connected
+// replicas. db is the database the command ran in: the journal and the
+// stream re-emit SELECT before it when their own database differs.
+func (s *Server) propagate(args [][]byte, db int) {
+	if s.AOF != nil {
+		if err := s.AOF.AppendInDB(db, args); err != nil {
+			s.Logger.Printf("server: aof append: %v", err)
+		}
+	}
+	s.appendStream(args, db)
+}
+
+// propagate appends args to the AOF and the replication stream: the database
+// of the command is the database of the connection.
 func (c *Ctx) propagate(args ...[][]byte) {
-	if c.Srv == nil || c.Srv.AOF == nil {
+	if c.Srv == nil {
 		return
 	}
+	db := 0
+	if c.Client != nil {
+		db = c.Client.db
+	}
 	for _, a := range args {
-		if err := c.Srv.AOF.Append(a); err != nil {
-			c.Srv.Logger.Printf("server: aof append: %v", err)
-		}
+		c.Srv.propagate(a, db)
 	}
 }
 
-// propagateCmd writes the current command to the AOF, rewriting relative TTLs
-// to absolute expiry. Handlers call it only after a mutation took effect.
+// propagateCmd writes the current command to the journal and the replication
+// stream, rewriting relative TTLs to absolute expiry. Handlers call it only
+// after a mutation took effect.
 //
-// The dispatcher writes the commands that propagate themselves to the AOF
-// (the ones whose AOF entry depends on whether they took effect), so a
+// The dispatcher writes the commands that do not propagate themselves (the
+// ones whose AOF entry does not depend on whether they took effect), so a
 // command that is written here must not be written there as well: a command
 // written twice would be applied twice on the replay.
 func (c *Ctx) propagateCmd() {
@@ -231,24 +267,21 @@ func (c *Ctx) propagateCmd() {
 	if c.spec.write && !c.spec.aofSelf {
 		return
 	}
-	if c.Srv.AOF == nil {
-		return
+	db := 0
+	if c.Client != nil {
+		db = c.Client.db
 	}
 	for _, cmd := range persist.RewriteForAOF(c.Args, c.Store.Now()) {
-		c.propagate(cmd)
+		c.Srv.propagate(cmd, db)
 	}
 }
 
-// propagateFromDispatch logs a write command to the AOF after execution. The
-// command must already be known to be a write command handled centrally.
-func (s *Server) propagateFromDispatch(args [][]byte) {
-	if s.AOF == nil {
-		return
-	}
-	for _, c := range persist.RewriteForAOF(args, s.dbs[0].Now()) {
-		if err := s.AOF.Append(c); err != nil {
-			s.Logger.Printf("server: aof append: %v", err)
-		}
+// propagateFromDispatch logs a write command to the journal and the
+// replication stream after execution. The command must already be known to
+// be a write command handled centrally.
+func (s *Server) propagateFromDispatch(args [][]byte, db int) {
+	for _, c := range persist.RewriteForAOF(args, s.dbsList()[0].Now()) {
+		s.propagate(c, db)
 	}
 }
 
@@ -277,7 +310,6 @@ func newServer(dbs []*store.Store, ln net.Listener) *Server {
 		dbs = []*store.Store{store.New()}
 	}
 	s := &Server{
-		dbs:         dbs,
 		Logger:      log.Default(),
 		cmds:        make(map[string]cmdSpec),
 		cmdsUpper:   make(map[string]cmdSpec),
@@ -287,7 +319,10 @@ func newServer(dbs []*store.Store, ln net.Listener) *Server {
 		PubSub:      NewPubSub(),
 		ln:          ln,
 		started:     time.Now(),
+		repl:        newReplState(DefaultReplBacklogSize),
+		replStop:    make(chan struct{}),
 	}
+	s.dbsRef.Store(&dbs)
 	def := "noeviction"
 	s.maxMemoryPolicy.Store(&def)
 	s.maxMemorySamples.Store(5)
@@ -305,6 +340,29 @@ func (s *Server) SetSlowlog(threshold int64, maxLen int) {
 // SetAppendFsync records the AOF fsync policy name for CONFIG GET/INFO.
 // Call before Serve.
 func (s *Server) SetAppendFsync(name string) { s.appendFsync = name }
+
+// SetMasterAuth records the password this server authenticates to its own
+// master with (REPLICAOF makes it a replica). Call before Serve.
+func (s *Server) SetMasterAuth(pass string) { s.masterAuth.Store(&pass) }
+
+// masterAuth returns the password for the link to the master ("" disables
+// the authentication).
+func (s *Server) masterAuthPass() string {
+	if p := s.masterAuth.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// SetReplBacklogSize sets the capacity of the replication backlog (bytes).
+// Call before Serve.
+func (s *Server) SetReplBacklogSize(n int) {
+	if n >= 1024 {
+		s.repl.mu.Lock()
+		s.repl.backlog = newReplBacklog(n)
+		s.repl.mu.Unlock()
+	}
+}
 
 // readBufferSize returns the size of the socket read buffer of a connection.
 func (s *Server) readBufferSize() int {
@@ -376,30 +434,40 @@ type loopAddr string
 func (a loopAddr) Network() string { return "tcp" }
 func (a loopAddr) String() string  { return string(a) }
 
+// dbsList returns the databases the server serves: one store per keyspace.
+func (s *Server) dbsList() []*store.Store { return *s.dbsRef.Load() }
+
 // DB returns the store of the database with the given index. Out-of-range
 // indexes fall back to the first database.
 func (s *Server) DB(i int) *store.Store {
-	if i < 0 || i >= len(s.dbs) {
-		return s.dbs[0]
+	dbs := s.dbsList()
+	if i < 0 || i >= len(dbs) {
+		return dbs[0]
 	}
-	return s.dbs[i]
+	return dbs[i]
 }
 
 // DBCount returns the number of databases.
-func (s *Server) DBCount() int { return len(s.dbs) }
+func (s *Server) DBCount() int { return len(s.dbsList()) }
 
-// SwapDBs swaps two databases.
+// SwapDBs swaps two databases. The slice of the databases is replaced
+// atomically: the commands of the other connections serve from the old or
+// the new slice as a whole, and never see a half-swapped pair.
 func (s *Server) SwapDBs(a, b int) {
-	if a < 0 || a >= len(s.dbs) || b < 0 || b >= len(s.dbs) {
+	dbs := s.dbsList()
+	if a < 0 || a >= len(dbs) || b < 0 || b >= len(dbs) {
 		return
 	}
-	s.dbs[a], s.dbs[b] = s.dbs[b], s.dbs[a]
+	cp := make([]*store.Store, len(dbs))
+	copy(cp, dbs)
+	cp[a], cp[b] = cp[b], cp[a]
+	s.dbsRef.Store(&cp)
 }
 
 // usedBytes returns the approximate memory footprint of all databases.
 func (s *Server) usedBytes() int {
 	n := 0
-	for _, db := range s.dbs {
+	for _, db := range s.dbsList() {
 		n += db.UsedBytes()
 	}
 	return n
@@ -408,8 +476,20 @@ func (s *Server) usedBytes() int {
 // Close stops the server and closes all active connections.
 func (s *Server) Close() error {
 	if s.saveStop != nil {
-		close(s.saveStop)
-		s.saveStop = nil
+		s.saveStopOnce.Do(func() { close(s.saveStop) })
+	}
+	if s.replStop != nil {
+		s.replStopOne.Do(func() { close(s.replStop) })
+	}
+	// The link to the master of this server (when it is a replica) is torn
+	// down before the listener: the replica client would otherwise retry
+	// while the server is going away.
+	s.repl.mu.Lock()
+	link := s.repl.link
+	s.repl.link = nil
+	s.repl.mu.Unlock()
+	if link != nil {
+		link.stopAndWait()
 	}
 	if s.Expirer != nil {
 		s.Expirer.Stop()
@@ -556,6 +636,7 @@ func NewLoopN(addr string, dbs []*store.Store, n int) (*Server, error) {
 
 // Serve accepts connections until the listener is closed.
 func (s *Server) Serve() error {
+	go s.replPingLoop()
 	if s.loopMode {
 		return s.serveLoops()
 	}
@@ -585,6 +666,7 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 		s.mu.Unlock()
 		s.countConn(-1)
 		s.PubSub.removeClient(c)
+		s.unregisterReplica(c)
 		c.unwatchAll(s.DB(c.db))
 		c.closeDone()
 		conn.Close()
@@ -826,11 +908,20 @@ func (s *Server) executeCommand(ctx *Ctx) error {
 	}
 
 	err := s.dispatch(ctx)
-	if spec.write && !spec.aofSelf {
-		s.propagateFromDispatch(ctx.Args)
-	}
 	if spec.write {
+		db := 0
+		if ctx.Client != nil {
+			db = ctx.Client.db
+		}
+		if !spec.aofSelf {
+			s.propagateFromDispatch(ctx.Args, db)
+		}
 		s.dirty[ctx.counterSlot()].Add(1)
+		// WAIT measures the replicas against the position of the stream
+		// after the last write of this client.
+		if ctx.Client != nil {
+			ctx.Client.woff.Store(s.repl.offset.Load())
+		}
 		// Evict only when a policy is configured; noeviction is handled by
 		// the pre-execution check above.
 		if m := s.maxMemory.Load(); m > 0 && s.maxMemoryPolicyName() != "noeviction" && int64(s.usedBytes()) > m {
@@ -855,6 +946,11 @@ func (s *Server) dispatch(ctx *Ctx) error {
 	// Without authentication only a few commands are allowed.
 	if s.authRequired() && ctx.Client != nil && !ctx.Client.authenticated && !authExempt[name] {
 		return ctx.W.WriteError(noAuthError)
+	}
+	// A replica rejects the writes of its clients: they would diverge from
+	// the master and be discarded by the next synchronization.
+	if spec.write && s.isReplica() {
+		return ctx.W.WriteError("READONLY You can't write against a read only replica.")
 	}
 	if ctx.Client != nil && ctx.Client.subscribed() && !allowedInSubscribeMode[name] {
 		return ctx.W.WriteError("ERR Can't execute '" + name + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")

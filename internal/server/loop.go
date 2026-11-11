@@ -874,6 +874,7 @@ func (l *loopState) closeConn(c *loopConn) {
 	if c.client != nil {
 		l.srv.removeLoopClient(c.client)
 		l.srv.PubSub.removeClient(c.client)
+		l.srv.unregisterReplica(c.client)
 		c.client.unwatchAll(l.srv.DB(c.client.db))
 		c.client.closeDone()
 	}

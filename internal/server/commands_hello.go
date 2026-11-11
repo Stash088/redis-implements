@@ -57,7 +57,7 @@ func cmdHello(ctx *Ctx) error {
 		resp.NewBulkString([]byte("proto")), resp.NewInteger(int64(proto)),
 		resp.NewBulkString([]byte("id")), resp.NewInteger(int64(c.id)),
 		resp.NewBulkString([]byte("mode")), resp.NewBulkString([]byte("standalone")),
-		resp.NewBulkString([]byte("role")), resp.NewBulkString([]byte("master")),
+		resp.NewBulkString([]byte("role")), resp.NewBulkString([]byte(ctx.Srv.roleName())),
 		resp.NewBulkString([]byte("modules")), resp.NewArray(nil),
 	}
 	if proto >= 3 {

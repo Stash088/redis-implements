@@ -94,6 +94,20 @@ type client struct {
 	// the client state.
 	lastCmd atomic.Pointer[string]
 
+	// repl is set when the client is a replica of this server (it ran
+	// PSYNC): the connection follows the replication stream from then on.
+	repl *replica
+
+	// replPort is the port the replica announced with REPLCONF
+	// listening-port before it ran PSYNC. It is written and read on the
+	// connection's own goroutine.
+	replPort int
+
+	// woff is the position of the replication stream after the last write
+	// command of this client: WAIT counts the replicas that processed at
+	// least this much of the stream.
+	woff atomic.Int64
+
 	// ctx and args are reused by the command loop: the connection handles
 	// one command at a time, so the per-command context and the slice of
 	// arguments do not have to be allocated again for every command.

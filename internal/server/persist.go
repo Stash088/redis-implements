@@ -17,12 +17,13 @@ func (s *Server) StartSavePolicy(seconds, changes int) {
 		return
 	}
 	s.saveStop = make(chan struct{})
+	stop := s.saveStop
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for {
 			select {
-			case <-s.saveStop:
+			case <-stop:
 				return
 			case <-t.C:
 				if time.Since(time.Unix(s.lastSave.Load(), 0)) >= time.Duration(seconds)*time.Second &&
@@ -45,7 +46,7 @@ func (s *Server) saveRDB() error {
 	if s.DBPath == "" {
 		return nil
 	}
-	return persist.Save(s.DBPath, s.dbs)
+	return persist.Save(s.DBPath, s.dbsList())
 }
 
 // Shutdown performs a final RDB save (if changes are pending) and closes the
@@ -109,7 +110,7 @@ func cmdBGREWRITEAOF(ctx *Ctx) error {
 	go func() {
 		defer ctx.Srv.aofMu.Unlock()
 		if err := ctx.Srv.AOF.Rewrite(func(w io.Writer) error {
-			return persist.DatasetCommands(w, ctx.Srv.dbs, ctx.Srv.dbs[0].Now())
+			return persist.DatasetCommands(w, ctx.Srv.dbsList(), ctx.Srv.dbsList()[0].Now())
 		}); err != nil {
 			ctx.Srv.Logger.Printf("server: bgrewriteaof: %v", err)
 		}
