@@ -104,6 +104,11 @@ func valueLen(b []byte) int {
 			return 0
 		}
 		return i + 2
+	case '_':
+		if len(b) < 3 {
+			return 0
+		}
+		return 3
 	case '$':
 		i := indexCRLF(b)
 		if i < 0 {
@@ -215,6 +220,12 @@ func (r *Reader) ReadValue() (Value, error) {
 		return NewBigNumber(string(line)), nil
 	case KindVerbatim:
 		return r.readVerbatim()
+	case KindNull:
+		// The RESP3 null is a bare "_\r\n" with no payload.
+		if _, err := r.readLine(); err != nil {
+			return Value{}, err
+		}
+		return Value{Kind: KindNull, IsNull: true}, nil
 	default:
 		return Value{}, fmt.Errorf("%w: unknown type byte %q", ErrInvalid, typ)
 	}

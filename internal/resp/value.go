@@ -17,6 +17,7 @@ const (
 	KindBigNumber Kind = '('
 	KindVerbatim  Kind = '='
 	KindPush      Kind = '>'
+	KindNull      Kind = '_'
 )
 
 // Value is a decoded RESP message.
@@ -102,7 +103,8 @@ func NewPush(elems []Value) Value {
 	return Value{Kind: KindPush, Array: elems}
 }
 
-// IsNil reports whether the value is a RESP null (null bulk string or null array).
+// IsNil reports whether the value is a RESP null (null bulk string, null
+// array or the RESP3 null).
 func (v Value) IsNil() bool {
 	return v.IsNull
 }

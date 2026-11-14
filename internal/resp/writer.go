@@ -174,6 +174,16 @@ func (w *Writer) WriteNullArray() error {
 	return nil
 }
 
+// WriteNull writes the RESP3 null "_\r\n". It is the element a RESP3 client
+// expects where a RESP2 client gets a null bulk string (an OVERFLOW FAIL
+// element of a BITFIELD reply, for one).
+func (w *Writer) WriteNull() error {
+	if _, err := w.bw.WriteString("_\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
 // WriteRaw writes pre-encoded RESP bytes directly to the buffer. It is used
 // to splice responses (e.g. EXEC array elements) produced by other writers.
 func (w *Writer) WriteRaw(b []byte) error {
