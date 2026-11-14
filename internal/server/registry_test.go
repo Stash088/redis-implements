@@ -24,6 +24,7 @@ var aofWriteCommandList = []string{
 	"xadd", "xdel", "xsetid", "xtrim",
 	"xack", "xautoclaim", "xclaim", "xgroup", "xreadgroup",
 	"getdel", "getset", "mset", "msetnx", "psetex", "setex", "setnx", "setrange",
+	"setbit", "bitop", "bitfield",
 }
 
 // memoryAddCommandList is the set of commands that can grow the dataset; they
@@ -33,6 +34,7 @@ var memoryAddCommandList = []string{
 	"hsetnx", "incr", "incrby", "incrbyfloat", "lpush", "lpushx", "lset",
 	"rpush", "rpushx", "sadd", "set", "zadd", "zincrby", "xadd",
 	"getset", "mset", "msetnx", "psetex", "setex", "setnx", "setrange",
+	"setbit", "bitop", "bitfield",
 }
 
 func newTestRegistry() map[string]cmdSpec {
