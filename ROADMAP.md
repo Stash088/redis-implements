@@ -225,11 +225,12 @@ redis-implements/
 | **P8** | Event loop: измерение модели ввода-вывода (−37…43 % CPU на команду), поллер `internal/netloop`, режим `--io-mode=loop` | ✅ слито |
 | **P9** | Полноценный режим event loop: блокирующие команды и Pub/Sub в цикле, починенный путь записи и закрытия соединений, `CLIENT REPLY`/`LIST`/`KILL`/`UNBLOCK`, остановка по сигналу; режим loop — по умолчанию (−60 % CPU на команду) | ✅ слито |
 | **P10** | Несколько event loop'ов: `--loops N`, каждый цикл владеет своим слушателем на порту (`SO_REUSEPORT`), блокирующие команды и Pub/Sub между циклами | ✅ слито |
-| **M22** | Репликация: каркас — `REPLICAOF`/`SLAVEOF` (команда и `--replicaof`), `REPLCONF`, `PSYNC`/`SYNC` (full sync, RDB с длиной), `ROLE`, `INFO replication`, `-READONLY` на реплике; интероп с redis-server 8.2 в обе стороны | 🚧 MR |
-| **M23** | Репликация: инкрементальная — backlog, `PSYNC … +CONTINUE` (частичный resync, в т.ч. при переподключении реплики), `REPLCONF ACK`/`GETACK`, `WAIT`, `WAITAOF` | 🚧 MR |
+| **M22** | Репликация: каркас — `REPLICAOF`/`SLAVEOF` (команда и `--replicaof`), `REPLCONF`, `PSYNC`/`SYNC` (full sync, RDB с длиной), `ROLE`, `INFO replication`, `-READONLY` на реплике; интероп с redis-server 8.2 в обе стороны | ✅ слито |
+| **M23** | Репликация: инкрементальная — backlog, `PSYNC … +CONTINUE` (частичный resync, в т.ч. при переподключении реплики), `REPLCONF ACK`/`GETACK`, `WAIT`, `WAITAOF` | ✅ слито |
+| **M24** | Битовые операции: `SETBIT`/`GETBIT`/`BITCOUNT`/`BITPOS` (байты и биты, отрицательные индексы), `BITOP` с восемью операциями (включая `DIFF`/`DIFF1`/`ANDOR`/`ONE` из Redis 8.2), `BITFIELD`/`BITFIELD_RO` (`#смещения`, `OVERFLOW WRAP/SAT/FAIL`) | 🚧 MR |
 
 Отложено до отдельного решения: кластер, Lua (`EVAL`), TLS/Unix-сокеты, `ACL`,
-Geo, HyperLogLog, битовые операции.
+Geo, HyperLogLog.
 
 ## Контроль качества
 - `go test -race ./...` — после каждого этапа
