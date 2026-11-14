@@ -36,6 +36,15 @@ var commandMeta = map[string]cmdMeta{
 	"getrange": {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "string", summary: "Get a substring of the string stored at a key"},
 	"setrange": {flags: []string{"write", "denyoom"}, firstKey: 1, lastKey: 1, step: 1, group: "string", summary: "Overwrite part of the string stored at a key"},
 
+	// Bitmaps.
+	"setbit":      {flags: []string{"write", "denyoom"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Sets or clears the bit at offset in the string value stored at key"},
+	"getbit":      {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Returns the bit value at offset in the string value stored at key"},
+	"bitcount":    {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Count set bits in a string"},
+	"bitpos":      {flags: []string{"readonly"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Find first bit set or clear in a string"},
+	"bitop":       {flags: []string{"write", "denyoom"}, firstKey: 2, lastKey: -1, step: 1, group: "bitmap", summary: "Perform bitwise operation between strings"},
+	"bitfield":    {flags: []string{"write", "denyoom"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Perform arbitrary integer arithmetic of bitfields in strings"},
+	"bitfield_ro": {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Perform arbitrary read-only integer arithmetic of bitfields in strings"},
+
 	// Keys.
 	"del":        {flags: []string{"write", "fast"}, firstKey: 1, lastKey: -1, step: 1, group: "generic", summary: "Delete a key"},
 	"unlink":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: -1, step: 1, group: "generic", summary: "Delete a key asynchronously in another thread"},

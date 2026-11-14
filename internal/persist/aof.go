@@ -471,6 +471,26 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 				st.SetRange(key(), off, args[3])
 			}
 		}
+	case "setbit":
+		if len(args) == 4 {
+			if off, err := strconv.ParseUint(string(args[2]), 10, 64); err == nil {
+				if bit, err := strconv.ParseInt(string(args[3]), 10, 64); err == nil && (bit == 0 || bit == 1) {
+					st.SetBit(key(), off, int(bit)) //nolint:errcheck
+				}
+			}
+		}
+	case "bitop":
+		if len(args) >= 4 {
+			if op, ok := store.ParseBitOp(args[1]); ok {
+				st.BitOp(op, args[2], args[3:]) //nolint:errcheck
+			}
+		}
+	case "bitfield":
+		if len(args) >= 2 {
+			if ops, err := store.ParseBitFieldOps(args[2:]); err == nil {
+				st.BitField(key(), ops) //nolint:errcheck
+			}
+		}
 	case "incrbyfloat":
 		if len(args) >= 3 {
 			if d, err := strconv.ParseFloat(string(args[2]), 64); err == nil {

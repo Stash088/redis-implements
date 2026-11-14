@@ -180,6 +180,18 @@ func (s *Server) registerCommands() {
 	s.regWSG("SETRANGE", 4, cmdSetRange)
 	s.regWG("INCRBYFLOAT", 3, cmdIncrByFloat)
 
+	// Bitmap commands: the string value treated as an array of bits. SETBIT,
+	// BITOP and BITFIELD are deterministic on the keys they touch, so the
+	// dispatcher propagates them to the AOF as they were received (like the
+	// reference implementation does).
+	s.regWG("SETBIT", 4, cmdSetBit)
+	s.reg("GETBIT", 3, cmdGetBit)
+	s.reg("BITCOUNT", -2, cmdBitCount)
+	s.reg("BITPOS", -3, cmdBitPos)
+	s.regWG("BITOP", -4, cmdBitOp)
+	s.regWG("BITFIELD", -2, cmdBitField)
+	s.reg("BITFIELD_RO", -2, cmdBitFieldRO)
+
 	// Blocking commands.
 	// The blocking commands write the effect of the pop to the journal
 	// themselves: the replay must not wait for a key.
