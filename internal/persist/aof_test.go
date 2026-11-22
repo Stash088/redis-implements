@@ -224,6 +224,39 @@ func TestAOFStreams(t *testing.T) {
 
 // TestRewriteAOFStream checks that the rewrite of the append-only file
 // rebuilds the streams.
+func TestRewriteAOFHyperLogLog(t *testing.T) {
+	fixture, err := os.ReadFile("../store/testdata/hll_sparse_valid.bin")
+	if err != nil {
+		t.Fatalf("read the HyperLogLog fixture: %v", err)
+	}
+	st := store.New()
+	st.SetStringWithTTL([]byte("hll"), fixture, 10*time.Minute)
+
+	path := filepath.Join(t.TempDir(), "appendonly.aof")
+	if err := RewriteAOF(path, []*store.Store{st}, time.Now()); err != nil {
+		t.Fatalf("RewriteAOF: %v", err)
+	}
+	got := store.New()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := LoadAOF(f, []*store.Store{got}); err != nil {
+		t.Fatalf("LoadAOF after rewrite: %v", err)
+	}
+	v, ok, err := got.GetString([]byte("hll"))
+	if err != nil || !ok || !bytes.Equal(v, fixture) {
+		t.Fatalf("rewritten HLL bytes changed: ok=%v err=%v", ok, err)
+	}
+	if card, _, _, err := got.PFCountKey([]byte("hll")); err != nil || card != 10 {
+		t.Errorf("PFCOUNT hll after AOF rewrite = %d, err=%v; want 10", card, err)
+	}
+	if ttl, ok := got.TTL([]byte("hll")); !ok || ttl <= 0 || ttl > 10*time.Minute {
+		t.Errorf("TTL hll after AOF rewrite = %v, ok=%v", ttl, ok)
+	}
+}
+
 func TestRewriteAOFStream(t *testing.T) {
 	st := store.New()
 	st.StreamAdd([]byte("s"), store.StreamIDExplicit, store.StreamID{MS: 1}, [][]byte{[]byte("f"), []byte("v1")}, false) //nolint:errcheck

@@ -45,6 +45,11 @@ var commandMeta = map[string]cmdMeta{
 	"bitfield":    {flags: []string{"write", "denyoom"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Perform arbitrary integer arithmetic of bitfields in strings"},
 	"bitfield_ro": {flags: []string{"readonly", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "bitmap", summary: "Perform arbitrary read-only integer arithmetic of bitfields in strings"},
 
+	// HyperLogLog.
+	"pfadd":   {flags: []string{"write", "denyoom", "fast"}, firstKey: 1, lastKey: 1, step: 1, group: "hyperloglog", summary: "Adds elements to a HyperLogLog key. Creates the key if it doesn't exist."},
+	"pfcount": {flags: []string{"readonly", "may_replicate"}, firstKey: 1, lastKey: -1, step: 1, group: "hyperloglog", summary: "Returns the approximated cardinality of the set(s) observed by the HyperLogLog key(s)."},
+	"pfmerge": {flags: []string{"write", "denyoom"}, firstKey: 1, lastKey: -1, step: 1, group: "hyperloglog", summary: "Merges one or more HyperLogLog values into a single key."},
+
 	// Keys.
 	"del":        {flags: []string{"write", "fast"}, firstKey: 1, lastKey: -1, step: 1, group: "generic", summary: "Delete a key"},
 	"unlink":     {flags: []string{"write", "fast"}, firstKey: 1, lastKey: -1, step: 1, group: "generic", summary: "Delete a key asynchronously in another thread"},

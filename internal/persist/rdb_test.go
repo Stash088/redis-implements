@@ -69,6 +69,31 @@ func TestRDBRoundTripAllTypes(t *testing.T) {
 	}
 }
 
+func TestRDBPreservesHyperLogLogBytes(t *testing.T) {
+	fixture, err := os.ReadFile("../store/testdata/hll_dense.bin")
+	if err != nil {
+		t.Fatalf("read the HyperLogLog fixture: %v", err)
+	}
+	st := store.New()
+	st.SetStringWithTTL([]byte("hll"), fixture, time.Hour)
+
+	got := roundTrip(t, st)
+	v, ok, err := got.GetString([]byte("hll"))
+	if err != nil || !ok {
+		t.Fatalf("GET hll: ok=%v err=%v", ok, err)
+	}
+	if !bytes.Equal(v, fixture) {
+		t.Fatal("RDB round-trip changed the HyperLogLog bytes")
+	}
+	card, _, _, err := got.PFCountKey([]byte("hll"))
+	if err != nil || card != 5052 {
+		t.Errorf("PFCOUNT hll after RDB = %d, err=%v; want 5052", card, err)
+	}
+	if ttl, ok := got.TTL([]byte("hll")); !ok || ttl <= 0 || ttl > time.Hour {
+		t.Errorf("TTL hll after RDB = %v, ok=%v", ttl, ok)
+	}
+}
+
 func TestRDBEmptyStore(t *testing.T) {
 	got := roundTrip(t, store.New())
 	if got.Len() != 0 {

@@ -491,6 +491,22 @@ func applyAOFCommand(st *store.Store, args [][]byte) error {
 				st.BitField(key(), ops) //nolint:errcheck
 			}
 		}
+	case "pfadd":
+		if len(args) >= 2 {
+			st.PFAdd(key(), args[2:]...) //nolint:errcheck
+		}
+	case "pfcount":
+		if len(args) == 2 {
+			// The single-key form may refresh the cached cardinality: the
+			// replay reproduces that mutation, like Redis does.
+			st.PFCountKey(key()) //nolint:errcheck
+		} else if len(args) > 2 {
+			st.PFCount(args[1:]...) //nolint:errcheck
+		}
+	case "pfmerge":
+		if len(args) >= 2 {
+			st.PFMerge(key(), args[2:]...) //nolint:errcheck
+		}
 	case "incrbyfloat":
 		if len(args) >= 3 {
 			if d, err := strconv.ParseFloat(string(args[2]), 64); err == nil {

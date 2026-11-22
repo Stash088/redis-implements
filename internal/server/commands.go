@@ -192,6 +192,16 @@ func (s *Server) registerCommands() {
 	s.regWG("BITFIELD", -2, cmdBitField)
 	s.reg("BITFIELD_RO", -2, cmdBitFieldRO)
 
+	// HyperLogLog commands. The values are ordinary strings (TypeString) in
+	// the Redis HYLL format. PFADD and PFMERGE propagate themselves: an
+	// expiring key is journaled as its resulting SET ... PXAT value, so a
+	// replay does not recreate a key whose TTL passed before the replay.
+	// PFCOUNT may update the cached cardinality and propagates the command
+	// then, although it is a read command.
+	s.regWSG("PFADD", -2, cmdPFAdd)
+	s.reg("PFCOUNT", -2, cmdPFCount)
+	s.regWSG("PFMERGE", -2, cmdPFMerge)
+
 	// Blocking commands.
 	// The blocking commands write the effect of the pop to the journal
 	// themselves: the replay must not wait for a key.

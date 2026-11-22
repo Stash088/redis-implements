@@ -1,0 +1,67 @@
+# Сценарий сверки: HyperLogLog (PFADD/PFCOUNT/PFMERGE), Redis 8.2.
+# Бинарные элементы и границы dense-представления проверяются Go-тестами;
+# здесь — текстовая семантика, одинаковая у обеих реализаций.
+
+# --- missing keys и создание ---
+PFCOUNT missing
+PFADD empty
+PFCOUNT empty
+EXISTS empty
+TYPE empty
+STRLEN empty
+PFADD empty
+PFCOUNT empty
+
+# --- добавление и повтор ---
+PFADD h a b c
+PFADD h a
+PFADD h
+PFCOUNT h
+TYPE h
+PFADD h "hello world"
+PFCOUNT h
+PFADD d d e f
+PFCOUNT d
+
+# --- объединение и приёмник-источник ---
+PFMERGE dst h d
+PFCOUNT dst
+PFMERGE d h
+PFCOUNT d
+PFMERGE dst2 h d missing
+PFCOUNT dst2
+PFMERGE fresh missing
+PFCOUNT fresh
+EXISTS fresh
+TYPE fresh
+PFMERGE h h
+PFCOUNT h
+
+# --- TTL сохраняется ---
+PFADD ttl a b
+EXPIRE ttl 100
+PFADD ttl c
+TTL ttl
+PFMERGE ttl2 ttl
+TTL ttl2
+EXPIRE ttl2 100
+PFMERGE ttl2 h
+TTL ttl2
+
+# --- ошибки: не строка HLL ---
+SET bad abc
+PFCOUNT bad
+PFADD bad x
+PFMERGE frombad bad
+EXISTS frombad
+
+# --- ошибки: обычный WRONGTYPE ---
+RPUSH l x
+PFADD l y
+PFCOUNT l
+PFMERGE d2 l
+
+# --- arity ---
+PFADD
+PFCOUNT
+PFMERGE

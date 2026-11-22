@@ -422,8 +422,8 @@ func TestBitmapCommandCount(t *testing.T) {
 	addr := startTestServer(t)
 	c := newClient(t, addr)
 	// 185 commands of the previous milestones (replication included) + the
-	// 7 bitmap ones.
-	if n := c.intWant("COMMAND", "COUNT"); n != 192 {
-		t.Errorf("COMMAND COUNT: got %d, want 192", n)
+	// 7 bitmap ones + the 3 HyperLogLog ones.
+	if n := c.intWant("COMMAND", "COUNT"); n != 195 {
+		t.Errorf("COMMAND COUNT: got %d, want 195", n)
 	}
 }

@@ -92,8 +92,14 @@ type Server struct {
 	DBPath  string
 	AOFPath string
 
-	saveMu   sync.Mutex
-	aofMu    sync.Mutex
+	saveMu sync.Mutex
+	aofMu  sync.Mutex
+	// hllMu orders HLL mutations with their journal/replica propagation. A
+	// snapshot captured under a shard lock is immutable, but without this
+	// mutex write A could publish its snapshot before write B and then append
+	// it after B, losing B on replay. It guards PFADD, PFMERGE and the
+	// single-key PFCOUNT cache refresh; multi-key PFCOUNT is a pure read.
+	hllMu    sync.Mutex
 	dirty    [counterSlots]counter // writes since the last save
 	lastSave atomic.Int64          // unix seconds of the last successful save
 	saveStop chan struct{}

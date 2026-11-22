@@ -7,6 +7,11 @@
 - **Протокол RESP** — полный парсер и сериализатор: simple strings, errors, integers, bulk strings, arrays, null-значения. Буферизованное чтение, лимиты на размер сообщений, защита от malformed-ввода.
 - **RESP3** — `HELLO 3` переключает соединение на RESP3: карты, множества, double, big number, verbatim string, push-кадры. Проверено живым клиентом redis-py.
 - **Типизированное хранилище** — `string`, `list`, `hash`, `set`, `zset`, `stream` с проверкой типов и ошибкой `-WRONGTYPE`.
+- **HyperLogLog** — `PFADD`/`PFCOUNT`/`PFMERGE` с бинарными представлениями Redis
+  (sparse и dense) в обычной строке: совместимые MurmurHash64A, регистры,
+  оценка мощности, кэш кардинальности и порог sparse→dense; проверены бинарный
+  обмен `GET`/`SET` с Redis, RDB-интероп и восстановление собственного AOF
+  (Redis использует multipart AOF, который здесь не читается).
 - **Структуры данных**:
   - `list` — собственный двусвязный список (O(1) push/pop с обоих концов);
   - `hash` / `set` — на основе `map`;
@@ -43,7 +48,7 @@
   пароля любой, кто достучился до порта, управляет сервером.
 - **Совместимость** — проверена работа с настоящим `redis-cli`, `redis-benchmark`
   и клиентом `redis-py` (в том числе в режиме RESP3); харнесс сверки сравнивает
-  все 9 сценариев с настоящим Redis 8.2 в обеих моделях ввода-вывода.
+  все сценарии с настоящим Redis 8.2 в обеих моделях ввода-вывода.
 
 ## Быстрый старт
 
@@ -149,6 +154,7 @@ RESP `PING` через busybox `nc`.
 | Персистентность | `SAVE`, `BGSAVE`, `BGREWRITEAOF` |
 | Строки | `SET` (EX/PX/NX/XX), `GET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `MSET`, `MSETNX`, `MGET`, `GETSET`, `GETDEL`, `GETEX`, `SETEX`, `PSETEX`, `SETNX`, `GETRANGE`, `SETRANGE` |
 | Битовые операции | `SETBIT`, `GETBIT`, `BITCOUNT` (диапазоны в байтах и битах), `BITPOS`, `BITOP AND/OR/XOR/NOT/DIFF/DIFF1/ANDOR/ONE`, `BITFIELD` (GET/SET/INCRBY, `#смещения`, `OVERFLOW WRAP/SAT/FAIL`), `BITFIELD_RO` |
+| HyperLogLog | `PFADD`, `PFCOUNT` (один ключ и объединение), `PFMERGE`; представления HYLL sparse/dense Redis 8.2 |
 | Списки | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET`, `LINSERT`, `LREM`, `LTRIM`, `LPOS`, `LMOVE`, `RPOPLPUSH`, `LPUSHX`, `RPUSHX` |
 | Хэши | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HLEN`, `HEXISTS`, `HKEYS`, `HVALS`, `HINCRBY`, `HINCRBYFLOAT`, `HSTRLEN`, `HMGET`, `HMSET`, `HSETNX`, `HRANDFIELD`, `HGETDEL` |
 | Множества | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SMISMEMBER`, `SINTERCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SDIFF`, `SINTER`, `SUNION` (+ варианты `_STORE`) |
@@ -295,7 +301,8 @@ scripts/compat-check.sh          # поднимает оба сервера и �
 ```
 
 Сценарии лежат в `testdata/compat/*.txt` (по файлу на семейство команд):
-blocking, hash, keys, list, scan, set, **stream**, zset.
+bitmap, blocking, hash, hyperloglog, keys, list, scan, set, **stream**,
+stream_group, zset.
 
 ## Тестирование и качество
 
