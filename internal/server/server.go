@@ -1,13 +1,11 @@
 package server
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"log"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -103,10 +101,6 @@ type Server struct {
 	dirty    [counterSlots]counter // writes since the last save
 	lastSave atomic.Int64          // unix seconds of the last successful save
 	saveStop chan struct{}
-	// saveStopOnce guards the close of saveStop: Close may run twice (the
-	// graceful shutdown and the final cleanup), and a closed channel must
-	// not close again.
-	saveStopOnce sync.Once
 
 	// Memory management (see evict.go in store): --maxmemory and policy.
 	maxMemory        atomic.Int64
@@ -128,11 +122,10 @@ type Server struct {
 	masterAuth atomic.Pointer[string]
 
 	// Replication: the stream, the backlog, the replicas and the master
-	// link. replStop stops the background goroutines of the replication
-	// (guarded by replStopOnce: Close may run twice).
-	repl        *replState
-	replStop    chan struct{}
-	replStopOne sync.Once
+	// link. replStop stops the background ping; Close and Shutdown stop it
+	// once through their shared shutdown.
+	repl     *replState
+	replStop chan struct{}
 
 	// Server metadata for INFO/CONFIG (set at startup, read-only afterwards).
 	appendFsync string
@@ -141,10 +134,32 @@ type Server struct {
 
 	ln       net.Listener
 	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
 	clients  map[net.Conn]*client
 	started  time.Time
 	connsNum int64
+
+	// Lifecycle state. stopped is set under mu when Close (or Shutdown)
+	// begins: from then on Serve does not accept and no connection is
+	// registered. The stop is performed once; a second Close or Shutdown
+	// waits for the first one and returns its result.
+	stopped  bool
+	stopOnce sync.Once
+	stopErr  error
+
+	// serveDone is non-nil once Serve has started and is closed when it
+	// returns. Close uses it to wait for Serve after stopping the listener
+	// and the loops. Serve may be called once (a second call returns an
+	// error while the server is still running).
+	serveDone chan struct{}
+	// connWG tracks the connection handlers of the goroutine model: Close
+	// waits for them to leave before it stops the persistence resources.
+	connWG sync.WaitGroup
+
+	// Background workers owned by the server (see persist.go and Close).
+	saveWG     sync.WaitGroup
+	replPingWG sync.WaitGroup
+	// finalizeMu serializes the final RDB save and the close of the AOF.
+	finalizeMu sync.Mutex
 
 	// loopClients are the clients served by the event loop. The clients of
 	// the goroutine model are in s.clients: they are keyed by the
@@ -221,13 +236,6 @@ func (s *Server) dirtyTotal() int64 {
 		n += s.dirty[i].Load()
 	}
 	return n
-}
-
-// resetDirty sets the number of the writes since the last save back to zero.
-func (s *Server) resetDirty() {
-	for i := range s.dirty {
-		s.dirty[i].Store(0)
-	}
 }
 
 // propagate writes one normalized command to the journal (when it is on)
@@ -319,7 +327,6 @@ func newServer(dbs []*store.Store, ln net.Listener) *Server {
 		Logger:      log.Default(),
 		cmds:        make(map[string]cmdSpec),
 		cmdsUpper:   make(map[string]cmdSpec),
-		conns:       make(map[net.Conn]struct{}),
 		clients:     make(map[net.Conn]*client),
 		loopClients: make(map[*client]struct{}),
 		PubSub:      NewPubSub(),
@@ -479,67 +486,77 @@ func (s *Server) usedBytes() int {
 	return n
 }
 
-// Close stops the server and closes all active connections.
+// Close stops the server and closes all active connections. It is safe to
+// call more than once and before Serve: the first call performs the shutdown,
+// the later ones wait for it and return the same result. Closing the server
+// does not save the dataset; Shutdown does the final RDB save before the
+// persistence resources are released.
 func (s *Server) Close() error {
-	if s.saveStop != nil {
-		s.saveStopOnce.Do(func() { close(s.saveStop) })
+	s.stopOnce.Do(func() { s.stopErr = s.stopServing() })
+	s.finalizePersistence(false)
+	return s.stopErr
+}
+
+// stopServing performs the shutdown in the ownership order:
+//
+//  1. stop accepting (the listener and the loop listeners),
+//  2. wake the event loops and the clients blocked in a command,
+//  3. wait for Serve and for the connection handlers to leave,
+//  4. stop the background expiry, the save policy and the replication
+//     (including the link to the master).
+//
+// The AOF and the final save are left to finalizePersistence, so Shutdown can
+// save after every command has left. s.mu is never held while waiting for a
+// goroutine that needs it for cleanup.
+func (s *Server) stopServing() error {
+	s.mu.Lock()
+	s.stopped = true
+	ln := s.ln
+	loops := s.loops
+	fds := s.loopFDs
+	s.loopFDs = nil
+	serveDone := s.serveDone
+	clients := make([]*client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
 	}
-	if s.replStop != nil {
-		s.replStopOne.Do(func() { close(s.replStop) })
-	}
-	// The link to the master of this server (when it is a replica) is torn
-	// down before the listener: the replica client would otherwise retry
-	// while the server is going away.
-	if link := s.repl.link.Swap(nil); link != nil {
-		link.stopAndWait()
-	}
-	if s.Expirer != nil {
-		s.Expirer.Stop()
-	}
-	if s.AOF != nil {
-		s.AOF.Close()
-		s.AOF = nil
-	}
+	s.mu.Unlock()
+
+	// Stop accepting first. A connection that Accept already returned is
+	// rejected by the stopped check when Serve registers it.
 	var err error
-	if s.ln != nil {
-		err = s.ln.Close()
+	if ln != nil {
+		if e := ln.Close(); e != nil && !errors.Is(e, net.ErrClosed) {
+			err = e
+		}
 	}
-	// The loops wake up, serve the rest of their queues and leave: they
-	// close their own connections and listeners. Closing a listener here
-	// would leave its loop with a dead descriptor.
-	loops := s.runningLoops()
-	if s.loopMode && len(loops) == 0 {
-		// The loops did not start yet: nobody owns the listeners, so
-		// they are closed here.
-		s.closeLoopFDs()
-	}
+	// The loops close their own listeners and connections when they leave.
 	for _, l := range loops {
 		l.stop()
 	}
-	s.mu.Lock()
-	for c := range s.conns {
-		c.Close()
+	// A listener left before its loop could take it is unowned: close it.
+	for _, fd := range fds {
+		if fd > 0 {
+			netloop.Close(fd)
+		}
 	}
-	s.conns = make(map[net.Conn]struct{})
-	s.mu.Unlock()
+	// The handlers of the goroutine model wait for the socket or for their
+	// done channel: close the socket and publish the done state. The done
+	// channel is idempotent, so the deferred cleanup of handleConn may close
+	// it again.
+	for _, c := range clients {
+		c.closeDone()
+		c.closeConn()
+	}
+	if serveDone != nil {
+		<-serveDone
+	}
+	// The handlers need s.mu (and Pub/Sub, WATCH and replica cleanup) when
+	// they leave, so they are drained before any resource they use is
+	// released.
+	s.connWG.Wait()
+	s.stopBackground()
 	return err
-}
-
-// setLoops remembers the states of the event loops, so that the server can
-// stop them.
-func (s *Server) setLoops(loops []*loopState) {
-	s.mu.Lock()
-	s.loops = loops
-	s.mu.Unlock()
-}
-
-// runningLoops returns the states of the event loops that are running (or
-// about to start): the list is empty before the loops started and after
-// they have all left.
-func (s *Server) runningLoops() []*loopState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loops
 }
 
 // closeLoopFDs closes the listeners the loops did not take yet: the server
@@ -556,11 +573,17 @@ func (s *Server) closeLoopFDs() {
 	}
 }
 
-// addLoopClient registers a client served by the event loop.
-func (s *Server) addLoopClient(c *client) {
+// addLoopClient registers a client served by the event loop. It reports false
+// when the shutdown has already begun: the connection was accepted in the
+// race with Close and must not be registered.
+func (s *Server) addLoopClient(c *client) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return false
+	}
 	s.loopClients[c] = struct{}{}
-	s.mu.Unlock()
+	return true
 }
 
 // removeLoopClient drops a client served by the event loop.
@@ -636,9 +659,29 @@ func NewLoopN(addr string, dbs []*store.Store, n int) (*Server, error) {
 	return s, nil
 }
 
-// Serve accepts connections until the listener is closed.
+// Serve accepts connections until the listener is closed. Serve is meant to
+// be called once; a second concurrent call returns an error. Calling it after
+// Close returns nil at once, so a shutdown that raced the start is safe.
 func (s *Server) Serve() error {
-	go s.replPingLoop()
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.serveDone != nil {
+		s.mu.Unlock()
+		return errors.New("server: Serve called more than once")
+	}
+	done := make(chan struct{})
+	s.serveDone = done
+	s.replPingWG.Add(1)
+	s.mu.Unlock()
+	defer close(done)
+
+	go func() {
+		defer s.replPingWG.Done()
+		s.replPingLoop()
+	}()
 	if s.loopMode {
 		return s.serveLoops()
 	}
@@ -650,20 +693,27 @@ func (s *Server) Serve() error {
 			}
 			return err
 		}
-		s.countConn(1)
 		c := newClient(conn)
 		s.mu.Lock()
-		s.conns[conn] = struct{}{}
+		if s.stopped {
+			// Close began after Accept returned: the connection is not
+			// registered and the client is not served.
+			s.mu.Unlock()
+			conn.Close()
+			return nil
+		}
 		s.clients[conn] = c
+		s.connWG.Add(1)
 		s.mu.Unlock()
+		s.countConn(1)
 		go s.handleConn(conn, c)
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn, c *client) {
+	defer s.connWG.Done()
 	defer func() {
 		s.mu.Lock()
-		delete(s.conns, conn)
 		delete(s.clients, conn)
 		s.mu.Unlock()
 		s.countConn(-1)
@@ -738,32 +788,15 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			continue
 		}
 
-		s.received[c.slot].Add(1)
 		ctx := &c.ctx
-		*ctx = Ctx{Store: s.DB(c.db), Args: args, W: w, Srv: s, Client: c}
-		// The command is resolved once per command: the lookup works on the
-		// bytes the client sent and does not allocate.
-		spec, ok := s.lookupCommand(args[0])
-		if !ok {
-			// Unknown command: the name is only needed for the error
-			// message, so the string is built on this cold path.
-			unknown := strings.ToLower(string(args[0]))
-			ctx.cmdName = unknown
-			ctx.cmdNamePtr = &unknown
-		} else {
-			ctx.cmdName = spec.name
-			ctx.cmdNamePtr = spec.namePtr
-			ctx.spec = spec
-		}
-		name := ctx.cmdName
+		var ing commandIngress
+		ing.begin(s, c, ctx, args, w)
 
 		// The Pub/Sub pump goroutine shares the connection's bufio with the
 		// command loop, so command execution and the final Flush must both
 		// happen under writeMu.
 		c.writeMu.Lock()
-		c.setLastCmd(ctx.cmdNamePtr)
-		if c.inMulti && !txnImmediate[name] {
-			s.queueForMulti(ctx, name)
+		if ing.route() {
 			if err := w.Flush(); err != nil {
 				c.writeMu.Unlock()
 				s.Logger.Printf("server: write error to %s: %v", conn.RemoteAddr(), err)
@@ -772,30 +805,11 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			c.writeMu.Unlock()
 			continue
 		}
-		// CLIENT REPLY OFF/SKIP suppresses the answer: the command runs
-		// against a throwaway writer, so nothing reaches the client. A
-		// command that turns the replies back on (CLIENT REPLY ON) still
-		// gets its answer, like in Redis.
-		mode := c.replyMode
-		suppress := mode != replyOn
-		realW := ctx.W
-		var shadow *resp.Writer
-		var shadowBuf *bytes.Buffer
-		if suppress {
-			shadowBuf = &bytes.Buffer{}
-			// A small buffer: the shadow writer holds one discarded reply.
-			shadow = resp.NewWriterSize(shadowBuf, 4096)
-			ctx.W = shadow
-		}
-		started := time.Now()
-		err = s.executeCommand(ctx)
-		s.sl.maybeAdd(args, c, time.Since(started))
-		if ctx.wait != nil {
+		ing.execute()
+		if req := ing.waiting(); req != nil {
 			// A blocking command found nothing to pop: release the write
 			// lock (the Pub/Sub pump needs it) and wait for a key to become
 			// available, then retry the command.
-			req := ctx.wait
-			ctx.wait = nil
 			c.writeMu.Unlock()
 			woken, werr := s.waitForKeys(c, req)
 			c.writeMu.Lock()
@@ -858,121 +872,19 @@ func (s *Server) handleConn(conn net.Conn, c *client) {
 			// available for another blocked client. The signal comes
 			// after the command: a command that only started waiting has
 			// changed nothing.
-			if spec.write && len(args) > 1 {
-				s.waiters.signal(args[1])
-			}
+			ing.signalWaiters()
 			c.writeMu.Unlock()
 			continue
 		}
-		if spec.write && len(args) > 1 {
-			// A write may have made a key available for a blocked client.
-			s.waiters.signal(args[1])
-		}
-		if suppress {
-			shadow.Flush()
-			if mode == replySkip {
-				c.replyMode = replyOn
-			}
-			if mode == replyOff && c.replyMode == replyOn {
-				realW.WriteRaw(shadowBuf.Bytes())
-			}
+		switch ing.finish() {
+		case endSuppressed:
 			c.writeMu.Unlock()
 			continue
-		}
-		if err == errQuit {
+		case endQuit:
 			w.Flush()
 			c.writeMu.Unlock()
 			return
 		}
 		c.writeMu.Unlock()
 	}
-}
-
-// executeCommand dispatches a single command and performs the bookkeeping
-// that surrounds execution: maxmemory enforcement, AOF propagation and the
-// dirty counter. It is used both by the connection loop and by EXEC when
-// replaying the transaction queue.
-func (s *Server) executeCommand(ctx *Ctx) error {
-	spec := ctx.spec
-	if spec.handler == nil {
-		spec, _ = s.lookupCommand(ctx.Args[0])
-		// The handler may need the metadata of the command (the AOF
-		// propagation, for one), so the resolved command is kept.
-		ctx.spec = spec
-	}
-
-	// Deny memory-adding commands under noeviction once the store is over
-	// the limit, like Redis.
-	if m := s.maxMemory.Load(); m > 0 && spec.memAdd && s.maxMemoryPolicyName() == "noeviction" {
-		if int64(s.usedBytes()) > m {
-			return ctx.W.WriteError("OOM command not allowed when used memory > 'maxmemory'.")
-		}
-	}
-
-	err := s.dispatch(ctx)
-	if spec.write {
-		db := 0
-		if ctx.Client != nil {
-			db = ctx.Client.db
-		}
-		if !spec.aofSelf {
-			s.propagateFromDispatch(ctx.Args, db)
-		}
-		s.dirty[ctx.counterSlot()].Add(1)
-		// WAIT measures the replicas against the position of the stream
-		// after the last write of this client.
-		if ctx.Client != nil {
-			ctx.Client.woff.Store(s.repl.offset.Load())
-		}
-		// Evict only when a policy is configured; noeviction is handled by
-		// the pre-execution check above.
-		if m := s.maxMemory.Load(); m > 0 && s.maxMemoryPolicyName() != "noeviction" && int64(s.usedBytes()) > m {
-			if n := s.evictCycle(m); n > 0 {
-				s.evicted.Add(uint64(n))
-			}
-		}
-	}
-	return err
-}
-
-func (s *Server) dispatch(ctx *Ctx) error {
-	spec := ctx.spec
-	ok := spec.handler != nil
-	if !ok {
-		spec, ok = s.lookupCommand(ctx.Args[0])
-	}
-	name := ctx.cmdName
-	if name == "" {
-		name = strings.ToLower(string(ctx.Args[0]))
-	}
-	// Without authentication only a few commands are allowed.
-	if s.authRequired() && ctx.Client != nil && !ctx.Client.authenticated && !authExempt[name] {
-		return ctx.W.WriteError(noAuthError)
-	}
-	// A replica rejects the writes of its clients: they would diverge from
-	// the master and be discarded by the next synchronization.
-	if spec.write && s.isReplica() {
-		return ctx.W.WriteError("READONLY You can't write against a read only replica.")
-	}
-	if ctx.Client != nil && ctx.Client.subscribed() && !allowedInSubscribeMode[name] {
-		return ctx.W.WriteError("ERR Can't execute '" + name + "': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")
-	}
-	if !ok {
-		return writeUnknownCommand(ctx)
-	}
-	return spec.handler(ctx)
-}
-
-func writeUnknownCommand(ctx *Ctx) error {
-	var b strings.Builder
-	for _, a := range ctx.Args[1:] {
-		if b.Len() > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString("'")
-		b.Write(a)
-		b.WriteString("'")
-	}
-	ctx.W.WriteError("ERR unknown command '" + string(ctx.Args[0]) + "', with args beginning with: " + b.String())
-	return nil
 }

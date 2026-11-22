@@ -1,9 +1,7 @@
 package server
 
 import (
-	"bytes"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,9 +57,10 @@ type loopState struct {
 	mu sync.Mutex
 	// stopped is set when the server is closed, finished when the loop has
 	// left, destroyed when the loop released its poller and its listener.
-	stopped   bool
-	finished  bool
-	destroyed bool
+	stopped      bool
+	finished     bool
+	destroyed    bool
+	pollerClosed bool
 }
 
 // loopConn is the state of a connection served by the event loop.
@@ -158,10 +157,10 @@ func newLoopClient(s *Server, conn *loopConn) *client {
 		c.addr = addr
 	}
 	// The connection is closed by the loop: the client is marked, and the
-	// loop closes it in its own thread.
+	// loop closes it in its own thread. The close comes from another
+	// goroutine, so it also wakes a loop that is waiting in the poller.
 	c.closeFn = func() {
-		conn.loop.markKill(conn)
-		conn.loop.poller.Notify()
+		conn.loop.markKillNotify(conn)
 	}
 	return c
 }
@@ -173,39 +172,52 @@ func newLoopClient(s *Server, conn *loopConn) *client {
 // Pub/Sub messages, the woken up clients) are under the mutex of the loop
 // that serves them.
 //
-// It returns when every loop has left. The first error stops the rest of
-// the loops.
+// The loop states are created and published under s.mu before any goroutine
+// starts. Close takes the same mutex: it either sees no loops and owns the
+// listeners (the start has not begun), or it sees the complete set and stops
+// every loop, even the ones whose goroutine has not started yet. There is no
+// window in which the listener descriptors are detached but the loops are not
+// published.
+//
+// It returns when every loop has left. The first error stops the rest of the
+// loops.
 func (s *Server) serveLoops() error {
 	s.mu.Lock()
+	if s.stopped {
+		// Close ran first: the listeners were closed by stopServing and
+		// there is nothing to serve.
+		s.mu.Unlock()
+		return nil
+	}
 	fds := s.loopFDs
 	s.loopFDs = nil
-	s.mu.Unlock()
 
-	// The states are created before the goroutines: from this moment the
-	// server can stop every loop, even the ones whose goroutine has not
-	// started yet.
 	loops := make([]*loopState, 0, len(fds))
-	defer func() {
-		// A loop that did not run (the start failed before its turn, or
-		// it is stopping right now) is released here. The call is safe
-		// on the loops that ran: they released their own resources.
-		for _, l := range loops {
-			l.destroy()
-		}
-		// The listeners whose loops were not created (the start failed
-		// before their turn) are closed here: nobody owns them.
-		for _, fd := range fds[len(loops):] {
-			netloop.Close(fd)
-		}
-	}()
 	for _, fd := range fds {
 		l, err := newLoopState(s, fd)
 		if err != nil {
+			s.mu.Unlock()
+			// The loops that were created own their pollers and
+			// listeners. The listeners whose loop was not created are
+			// still unowned: close them here.
+			for _, l := range loops {
+				l.destroy()
+			}
+			for _, fd := range fds[len(loops):] {
+				netloop.Close(fd)
+			}
 			return err
 		}
 		loops = append(loops, l)
 	}
-	s.setLoops(loops)
+	s.loops = loops
+	s.mu.Unlock()
+
+	if len(loops) == 0 {
+		// No listener is left (Close already took them): do not wait for
+		// an error that nobody will send.
+		return nil
+	}
 
 	errs := make(chan error, len(loops))
 	var wg sync.WaitGroup
@@ -223,7 +235,9 @@ func (s *Server) serveLoops() error {
 		l.stop()
 	}
 	wg.Wait()
-	s.setLoops(nil)
+	s.mu.Lock()
+	s.loops = nil
+	s.mu.Unlock()
 	// The loops leave with nil when the server is stopped: the error of
 	// the run is reported even when another loop left first.
 	for err == nil && len(errs) > 0 {
@@ -254,15 +268,15 @@ func (l *loopState) run() error {
 		// The loop has left: the connections and the listener are closed,
 		// so the server does not accept the connections any more.
 		l.closeAll()
-		l.markFinished()
+		l.mu.Lock()
+		l.finished = true
+		l.closePollerLocked()
+		l.destroyed = true
+		l.mu.Unlock()
 		if l.ln > 0 {
 			netloop.Close(l.ln)
 			l.ln = 0
 		}
-		l.poller.Close()
-		l.mu.Lock()
-		l.destroyed = true
-		l.mu.Unlock()
 	}()
 	if err := l.poller.AddRead(l.ln); err != nil {
 		return err
@@ -287,6 +301,25 @@ func (l *loopState) run() error {
 	}
 }
 
+// closePollerLocked releases the poller. The caller holds l.mu: a notifier
+// holds the same mutex while it writes to the wakeup channel, so the
+// notification can never reach a closed (and possibly reused) descriptor.
+func (l *loopState) closePollerLocked() {
+	if l.pollerClosed {
+		return
+	}
+	l.pollerClosed = true
+	l.poller.Close()
+}
+
+// notifyLocked wakes the poller if it is still alive. The caller holds l.mu.
+func (l *loopState) notifyLocked() {
+	if l.pollerClosed {
+		return
+	}
+	l.poller.Notify()
+}
+
 // destroy releases the resources of a loop that did not run: the poller and
 // the listener. It is safe on a loop that has left: the loop released its
 // resources and marked itself destroyed.
@@ -296,20 +329,13 @@ func (l *loopState) destroy() {
 		l.mu.Unlock()
 		return
 	}
+	l.closePollerLocked()
 	l.destroyed = true
 	l.mu.Unlock()
-	l.poller.Close()
 	if l.ln > 0 {
 		netloop.Close(l.ln)
 		l.ln = 0
 	}
-}
-
-// markFinished remembers that the loop has left.
-func (l *loopState) markFinished() {
-	l.mu.Lock()
-	l.finished = true
-	l.mu.Unlock()
 }
 
 // isStopped reports whether the server was closed.
@@ -328,8 +354,8 @@ func (l *loopState) stop() {
 		return
 	}
 	l.stopped = true
+	l.notifyLocked()
 	l.mu.Unlock()
-	l.poller.Notify()
 }
 
 // handleEvents serves the events of the ready descriptors.
@@ -369,9 +395,21 @@ func (l *loopState) accept() {
 		if err != nil {
 			return
 		}
+		if l.isStopped() {
+			// The server began to stop while the listener was ready: the
+			// connection is not registered.
+			netloop.Close(fd)
+			return
+		}
 		c := newLoopConn(fd, l)
 		l.conns[fd] = c
-		l.srv.addLoopClient(c.client)
+		if !l.srv.addLoopClient(c.client) {
+			// Close began between Accept and the registration.
+			delete(l.conns, fd)
+			netloop.Close(fd)
+			c.client.closeDone()
+			return
+		}
 		l.srv.countConn(1)
 		l.watchRead(c)
 	}
@@ -441,58 +479,22 @@ func (l *loopState) loopRead(c *loopConn) (close bool) {
 // loopCommand runs one command of a connection.
 func (l *loopState) loopCommand(c *loopConn, args [][]byte) {
 	s := l.srv
-	s.received[c.client.slot].Add(1)
-	ctx := &c.ctx
-	*ctx = Ctx{Store: s.DB(c.client.db), Args: args, W: c.writer, Srv: s, Client: c.client}
+	var ing commandIngress
+	ing.begin(s, c.client, &c.ctx, args, c.writer)
 
-	spec, ok := s.lookupCommand(args[0])
-	if !ok {
-		// Unknown command: the name is only needed for the error message,
-		// so the string is built on this cold path.
-		unknown := strings.ToLower(string(args[0]))
-		ctx.cmdName = unknown
-		ctx.cmdNamePtr = &unknown
-	} else {
-		ctx.cmdName = spec.name
-		ctx.cmdNamePtr = spec.namePtr
-		ctx.spec = spec
-	}
-	name := ctx.cmdName
-	c.client.setLastCmd(ctx.cmdNamePtr)
-
-	if c.client.inMulti && !txnImmediate[name] {
-		s.queueForMulti(ctx, name)
+	if ing.route() {
 		c.writer.Flush()
 		l.markWrite(c)
 		return
 	}
 
-	// CLIENT REPLY OFF/SKIP suppresses the answer: the command runs
-	// against a throwaway writer, so nothing reaches the client. A command
-	// that turns the replies back on (CLIENT REPLY ON) still gets its
-	// answer, like in Redis.
-	mode := c.client.replyMode
-	suppress := mode != replyOn
-	realW := ctx.W
-	var shadow *resp.Writer
-	var shadowBuf *bytes.Buffer
-	if suppress {
-		shadowBuf = &bytes.Buffer{}
-		// A small buffer: the shadow writer holds one discarded reply.
-		shadow = resp.NewWriterSize(shadowBuf, 4096)
-		ctx.W = shadow
-	}
-	started := time.Now()
-	err := s.executeCommand(ctx)
-	s.sl.maybeAdd(args, c.client, time.Since(started))
-	if ctx.wait != nil {
+	ing.execute()
+	if req := ing.waiting(); req != nil {
 		// A blocking command found nothing to pop: the client waits for a
 		// key to become available, and the loop goes on with the other
 		// connections.
-		req := ctx.wait
-		ctx.wait = nil
-		if suppress {
-			shadow.Flush()
+		if ing.suppressed() {
+			ing.flushShadow()
 		} else {
 			// Whatever the command wrote before it started waiting goes
 			// out now: the client is not answered until the command
@@ -502,25 +504,12 @@ func (l *loopState) loopCommand(c *loopConn, args [][]byte) {
 		l.block(c, args, req)
 		return
 	}
-	if spec.write && len(args) > 1 {
-		// A write may have made a key available for a blocked client. The
-		// signal comes after the command: a command that only started
-		// waiting has changed nothing.
-		s.waiters.signal(args[1])
-	}
-	if suppress {
-		shadow.Flush()
-		if mode == replySkip {
-			c.client.replyMode = replyOn
-		}
-		if mode == replyOff && c.client.replyMode == replyOn {
-			realW.WriteRaw(shadowBuf.Bytes())
-		}
+	switch ing.finish() {
+	case endSuppressed:
 		c.writer.Flush()
 		l.markWrite(c)
 		return
-	}
-	if err == errQuit {
+	case endQuit:
 		c.writer.Flush()
 		l.markWrite(c)
 		l.markKill(c)
@@ -708,10 +697,11 @@ func (c *loopConn) wakeup() {
 	l := c.loop
 	l.mu.Lock()
 	l.runnable = append(l.runnable, c)
-	l.mu.Unlock()
 	// The loop may be waiting for the readiness of the sockets: the
-	// notification wakes it.
-	l.poller.Notify()
+	// notification wakes it. It is sent under the same mutex that closes
+	// the poller, so it cannot reach a closed descriptor.
+	l.notifyLocked()
+	l.mu.Unlock()
 }
 
 // pushFrame queues a Pub/Sub message for the connection: the loop writes it
@@ -723,8 +713,9 @@ func (c *loopConn) pushFrame(frame resp.Value) bool {
 	if len(c.out) >= pubsubQueueSize {
 		l.mu.Unlock()
 		// The subscriber fell behind: the connection is closed, like Redis
-		// drops a client with a full output buffer.
-		l.markKill(c)
+		// drops a client with a full output buffer. The publisher may be
+		// another goroutine, so wake the loop to close it.
+		l.markKillNotify(c)
 		return false
 	}
 	c.out = append(c.out, frame)
@@ -732,10 +723,11 @@ func (c *loopConn) pushFrame(frame resp.Value) bool {
 		c.pushQueued = true
 		l.push = append(l.push, c)
 	}
-	l.mu.Unlock()
 	// The loop may be waiting for the readiness of the sockets: the
-	// notification wakes it.
-	l.poller.Notify()
+	// notification wakes it. It is sent under the same mutex that closes
+	// the poller, so it cannot reach a closed descriptor.
+	l.notifyLocked()
+	l.mu.Unlock()
 	return true
 }
 
@@ -864,13 +856,31 @@ func (l *loopState) unwatchWrite(c *loopConn) {
 	c.writing = false
 }
 
-// markKill marks a connection to be closed.
+// markKill marks a connection to be closed when the loop itself noticed the
+// condition (EOF, QUIT). The loop is already running, so it does not need a
+// poller notification.
 func (l *loopState) markKill(c *loopConn) {
+	l.markKillFrom(c, false)
+}
+
+// markKillNotify marks a connection from another goroutine (a client close, a
+// slow subscriber): the loop may be waiting in the poller, so it is woken.
+func (l *loopState) markKillNotify(c *loopConn) {
+	l.markKillFrom(c, true)
+}
+
+// markKillFrom appends the connection to the close list on the first mark.
+// Only the transition notifies, and the notification is sent under the mutex
+// that guards the poller lifetime, so it never reaches a closed descriptor.
+func (l *loopState) markKillFrom(c *loopConn, notify bool) {
 	if c.kill.Swap(true) {
 		return
 	}
 	l.mu.Lock()
 	l.toClose = append(l.toClose, c)
+	if notify {
+		l.notifyLocked()
+	}
 	l.mu.Unlock()
 }
 

@@ -131,21 +131,3 @@ func TestAOFBatchWritesOneCommand(t *testing.T) {
 		t.Errorf("got %d keys after the replay, want 100", got)
 	}
 }
-
-// TestAOFEncodingMatchesWriter checks that the hand written encoder produces
-// the same bytes as the RESP writer.
-func TestAOFEncodingMatchesWriter(t *testing.T) {
-	cases := [][][]byte{
-		{[]byte("SET"), []byte("k"), []byte("v")},
-		{[]byte("SET"), []byte("k"), []byte("")},
-		{[]byte("RPUSH"), []byte("l"), []byte("a"), []byte("b")},
-		{[]byte("SET"), []byte("k"), []byte("v\x00\r\n")},
-	}
-	for _, c := range cases {
-		got := appendCommand(nil, c)
-		want := EncodeCommand(c)
-		if string(got) != string(want) {
-			t.Errorf("encoding mismatch for %q: got %q, want %q", c, got, want)
-		}
-	}
-}

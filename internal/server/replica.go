@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/amir/redis-implements/internal/persist"
+	"github.com/amir/redis-implements/internal/replay"
 	"github.com/amir/redis-implements/internal/resp"
 	"github.com/amir/redis-implements/internal/store"
 )
@@ -329,7 +330,7 @@ func (rc *replicaClient) receiveRDB(br *bufio.Reader) error {
 // stores. It returns when the master is lost.
 func (rc *replicaClient) stream(br *bufio.Reader, touchIO func()) error {
 	s := rc.srv
-	ap := persist.NewApplier(s.dbsList())
+	ap := replay.NewApplier(s.dbsList(), persist.RestoreValue)
 	// SWAPDB of the master reaches the slice of the databases through the
 	// server: the slice is replaced atomically for the readers, and the
 	// applier continues with the slice that owns the result.
@@ -358,7 +359,7 @@ func (rc *replicaClient) stream(br *bufio.Reader, touchIO func()) error {
 		}
 		// The offset counts every byte of the stream, the protocol traffic
 		// included: the master counted the same bytes when it fed it.
-		rc.srv.repl.offset.Add(int64(len(persist.EncodeCommand(args))))
+		rc.srv.repl.offset.Add(int64(len(resp.EncodeCommand(args))))
 		switch strings.ToLower(string(args[0])) {
 		case "ping":
 			// The heartbeat of the master: nothing to apply.

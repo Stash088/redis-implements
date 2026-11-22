@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/amir/redis-implements/internal/resp"
 	"github.com/amir/redis-implements/internal/store"
 )
 
@@ -134,7 +134,7 @@ func (a *Appender) AppendInDB(db int, args [][]byte) error {
 // appendLocked encodes one command into the buffer. The caller must hold
 // a.mu.
 func (a *Appender) appendLocked(args [][]byte) {
-	a.buf = appendCommand(a.buf, args)
+	a.buf = resp.AppendCommand(a.buf, args)
 }
 
 // appendFlushLocked writes the buffer out per the fsync policy. The caller
@@ -234,28 +234,6 @@ func (a *Appender) flushInterval() time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.flushEvery
-}
-
-// EncodeCommand serializes a command as a RESP array of bulk strings.
-func EncodeCommand(args [][]byte) []byte {
-	return appendCommand(make([]byte, 0, 64), args)
-}
-
-// appendCommand serializes a command as a RESP array of bulk strings and
-// appends it to dst. The buffer is reused, so appending a command does not
-// allocate.
-func appendCommand(dst []byte, args [][]byte) []byte {
-	dst = append(dst, '*')
-	dst = strconv.AppendInt(dst, int64(len(args)), 10)
-	dst = append(dst, '\r', '\n')
-	for _, a := range args {
-		dst = append(dst, '$')
-		dst = strconv.AppendInt(dst, int64(len(a)), 10)
-		dst = append(dst, '\r', '\n')
-		dst = append(dst, a...)
-		dst = append(dst, '\r', '\n')
-	}
-	return dst
 }
 
 // RewriteForAOF normalizes a write command for safe replay. Relative TTLs
@@ -410,566 +388,6 @@ func upperASCII(b []byte) []byte {
 	return out
 }
 
-// applyAOFCommand applies one replayed command to the store. Store-level errors
-// (e.g. WRONGTYPE) are ignored because replay is expected to reproduce the
-// exact original execution, including failures.
-func applyAOFCommand(st *store.Store, args [][]byte) error {
-	if len(args) == 0 {
-		return nil
-	}
-	name := strings.ToLower(string(args[0]))
-	key := func() []byte {
-		if len(args) > 1 {
-			return args[1]
-		}
-		return nil
-	}
-	switch name {
-	case "mset":
-		// MSET key value [key value ...]
-		if len(args) >= 3 && len(args)%2 == 1 {
-			st.SetStrings(args[1:], false)
-		}
-	case "msetnx":
-		if len(args) >= 3 && len(args)%2 == 1 {
-			st.SetStrings(args[1:], true)
-		}
-	case "getset":
-		if len(args) >= 3 {
-			st.GetSet(key(), args[2]) //nolint:errcheck
-		}
-	case "getdel":
-		if len(args) >= 2 {
-			st.GetDel(key()) //nolint:errcheck
-		}
-	case "getex":
-		if len(args) >= 2 {
-			st.GetEx(key(), time.Time{}, false) //nolint:errcheck
-		}
-	case "setex":
-		if len(args) >= 4 {
-			sec, err := strconv.ParseInt(string(args[2]), 10, 64)
-			if err == nil && sec > 0 {
-				st.SetEx(key(), args[3], time.Duration(sec)*time.Second)
-			}
-		}
-	case "psetex":
-		if len(args) >= 4 {
-			ms, err := strconv.ParseInt(string(args[2]), 10, 64)
-			if err == nil && ms > 0 {
-				st.SetEx(key(), args[3], time.Duration(ms)*time.Millisecond)
-			}
-		}
-	case "setnx":
-		if len(args) >= 3 {
-			st.SetNX(key(), args[2])
-		}
-	case "setrange":
-		if len(args) >= 4 {
-			off, err := strconv.ParseInt(string(args[2]), 10, 64)
-			if err == nil {
-				st.SetRange(key(), off, args[3])
-			}
-		}
-	case "setbit":
-		if len(args) == 4 {
-			if off, err := strconv.ParseUint(string(args[2]), 10, 64); err == nil {
-				if bit, err := strconv.ParseInt(string(args[3]), 10, 64); err == nil && (bit == 0 || bit == 1) {
-					st.SetBit(key(), off, int(bit)) //nolint:errcheck
-				}
-			}
-		}
-	case "bitop":
-		if len(args) >= 4 {
-			if op, ok := store.ParseBitOp(args[1]); ok {
-				st.BitOp(op, args[2], args[3:]) //nolint:errcheck
-			}
-		}
-	case "bitfield":
-		if len(args) >= 2 {
-			if ops, err := store.ParseBitFieldOps(args[2:]); err == nil {
-				st.BitField(key(), ops) //nolint:errcheck
-			}
-		}
-	case "pfadd":
-		if len(args) >= 2 {
-			st.PFAdd(key(), args[2:]...) //nolint:errcheck
-		}
-	case "pfcount":
-		if len(args) == 2 {
-			// The single-key form may refresh the cached cardinality: the
-			// replay reproduces that mutation, like Redis does.
-			st.PFCountKey(key()) //nolint:errcheck
-		} else if len(args) > 2 {
-			st.PFCount(args[1:]...) //nolint:errcheck
-		}
-	case "pfmerge":
-		if len(args) >= 2 {
-			st.PFMerge(key(), args[2:]...) //nolint:errcheck
-		}
-	case "incrbyfloat":
-		if len(args) >= 3 {
-			if d, err := strconv.ParseFloat(string(args[2]), 64); err == nil {
-				st.IncrByFloat(key(), d)
-			}
-		}
-	case "set":
-		if len(args) < 3 {
-			return nil
-		}
-		// The flags of SET (and of the commands propagated in its shape):
-		// NX/XX gate the write, KEEPTTL keeps the expiry of the key, and
-		// the expiry options arm a TTL. Redis propagates the relative
-		// expiry options (EX/PX) of SET as an absolute PXAT, so the replay
-		// reproduces the same moment of expiry.
-		var nx, xx, keepttl bool
-		var exSec, pxMs, exAtSec, pxAtMs int64
-		for i := 3; i < len(args); i++ {
-			switch strings.ToUpper(string(args[i])) {
-			case "NX":
-				nx = true
-			case "XX":
-				xx = true
-			case "KEEPTTL":
-				keepttl = true
-			case "GET":
-				// The reply carries the old value; the state is the same.
-			case "EX":
-				if i+1 < len(args) {
-					exSec, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
-					i++
-				}
-			case "PX":
-				if i+1 < len(args) {
-					pxMs, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
-					i++
-				}
-			case "EXAT":
-				if i+1 < len(args) {
-					exAtSec, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
-					i++
-				}
-			case "PXAT":
-				if i+1 < len(args) {
-					pxAtMs, _ = strconv.ParseInt(string(args[i+1]), 10, 64)
-					i++
-				}
-			}
-		}
-		if nx && st.Exists(key()) == 1 {
-			return nil
-		}
-		if xx && st.Exists(key()) == 0 {
-			return nil
-		}
-		if keepttl {
-			// The value is replaced and the remaining time of the key is
-			// armed again (the store drops the TTL with the entry).
-			if d, ok := st.TTL(key()); ok && d > 0 {
-				st.SetString(key(), args[2])
-				st.Expire(key(), d) //nolint:errcheck
-			} else {
-				st.SetString(key(), args[2])
-			}
-		} else {
-			// Without KEEPTTL the SET replaces the entry: the TTL of the
-			// old value is gone.
-			st.SetString(key(), args[2])
-		}
-		switch {
-		case pxAtMs != 0:
-			st.ExpireAt(key(), time.UnixMilli(pxAtMs)) //nolint:errcheck
-		case exAtSec != 0:
-			st.ExpireAt(key(), time.Unix(exAtSec, 0)) //nolint:errcheck
-		case pxMs > 0:
-			st.Expire(key(), time.Duration(pxMs)*time.Millisecond) //nolint:errcheck
-		case exSec > 0:
-			st.Expire(key(), time.Duration(exSec)*time.Second) //nolint:errcheck
-		}
-	case "append":
-		if len(args) == 3 {
-			st.Append(key(), args[2])
-		}
-	case "incr":
-		st.IncrBy(key(), 1)
-	case "decr":
-		st.IncrBy(key(), -1)
-	case "incrby":
-		if len(args) == 3 {
-			if d, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				st.IncrBy(key(), d)
-			}
-		}
-	case "decrby":
-		if len(args) == 3 {
-			if d, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				st.IncrBy(key(), -d)
-			}
-		}
-	case "del":
-		st.Delete(args[1:]...)
-	case "rename":
-		if len(args) == 3 {
-			st.Rename(key(), args[2]) //nolint:errcheck
-		}
-	case "renamenx":
-		if len(args) == 3 {
-			st.RenameNX(key(), args[2]) //nolint:errcheck
-		}
-	case "restore":
-		// RESTORE key ttl serialized-value
-		if len(args) >= 4 {
-			if e, err := RestoreValue(args[3]); err == nil {
-				ttl, _ := strconv.ParseInt(string(args[2]), 10, 64)
-				st.RestoreEntryWithTTL(key(), e, time.Duration(ttl)*time.Millisecond)
-			}
-		}
-	case "expire":
-		if len(args) == 3 {
-			if s, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				if s <= 0 {
-					st.Delete(key())
-				} else {
-					st.Expire(key(), time.Duration(s)*time.Second)
-				}
-			}
-		}
-	case "pexpire":
-		if len(args) == 3 {
-			if ms, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				if ms <= 0 {
-					st.Delete(key())
-				} else {
-					st.Expire(key(), time.Duration(ms)*time.Millisecond)
-				}
-			}
-		}
-	case "expireat":
-		if len(args) == 3 {
-			if ts, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				st.ExpireAt(key(), time.Unix(ts, 0))
-			}
-		}
-	case "pexpireat":
-		if len(args) == 3 {
-			if ts, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				st.ExpireAt(key(), time.UnixMilli(ts))
-			}
-		}
-	case "persist":
-		st.Persist(key())
-	case "flushdb":
-		st.Flush()
-	case "lpush":
-		st.ListPush(key(), true, args[2:]...)
-	case "rpush":
-		st.ListPush(key(), false, args[2:]...)
-	case "linsert":
-		// LINSERT key BEFORE|AFTER pivot element
-		if len(args) == 5 {
-			before := strings.EqualFold(string(args[2]), "BEFORE")
-			st.ListInsert(key(), before, args[3], args[4]) //nolint:errcheck
-		}
-	case "lrem":
-		// LREM key count element
-		if len(args) == 4 {
-			if n, err := strconv.Atoi(string(args[2])); err == nil {
-				st.ListRemove(key(), n, args[3]) //nolint:errcheck
-			}
-		}
-	case "ltrim":
-		// LTRIM key start stop
-		if len(args) == 4 {
-			start, err1 := strconv.Atoi(string(args[2]))
-			stop, err2 := strconv.Atoi(string(args[3]))
-			if err1 == nil && err2 == nil {
-				st.ListTrim(key(), start, stop) //nolint:errcheck
-			}
-		}
-	case "lmove":
-		// LMOVE source destination LEFT|RIGHT LEFT|RIGHT
-		if len(args) == 5 {
-			fromLeft := strings.EqualFold(string(args[3]), "LEFT")
-			toLeft := strings.EqualFold(string(args[4]), "LEFT")
-			st.ListMove(key(), args[2], fromLeft, toLeft) //nolint:errcheck
-		}
-	case "rpoplpush":
-		// RPOPLPUSH source destination
-		if len(args) == 3 {
-			st.ListMove(key(), args[2], false, true) //nolint:errcheck
-		}
-	case "lpushx":
-		// LPUSHX key element [element ...]
-		if len(args) >= 3 {
-			st.ListPushExist(key(), true, args[2:]) //nolint:errcheck
-		}
-	case "rpushx":
-		// RPUSHX key element [element ...]
-		if len(args) >= 3 {
-			st.ListPushExist(key(), false, args[2:]) //nolint:errcheck
-		}
-	case "lpop":
-		if len(args) == 2 {
-			st.ListPop(key(), true)
-		}
-	case "rpop":
-		if len(args) == 2 {
-			st.ListPop(key(), false)
-		}
-	case "lset":
-		if len(args) == 4 {
-			if i, err := strconv.ParseInt(string(args[2]), 10, 64); err == nil {
-				st.ListSet(key(), int(i), args[3])
-			}
-		}
-	case "hset":
-		if len(args) >= 4 && len(args)%2 == 0 {
-			for i := 2; i+1 < len(args); i += 2 {
-				st.HashSet(key(), args[i], args[i+1])
-			}
-		}
-	case "hdel":
-		st.HashDel(key(), args[2:]...)
-	case "smove":
-		if len(args) == 4 {
-			st.SetMove(key(), args[2], args[3]) //nolint:errcheck
-		}
-	case "spop":
-		// The command reaches the journal either as SPOP key [count] (the
-		// journals of the older servers) or as SPOP key member... (the
-		// effect the command propagates now, the way Redis propagates
-		// SREM operations).
-		if len(args) > 2 {
-			if n, err := strconv.Atoi(string(args[2])); err == nil && len(args) == 3 {
-				st.SetPop(key(), n) //nolint:errcheck
-			} else {
-				st.SetRem(key(), args[2:]...) //nolint:errcheck
-			}
-		} else {
-			st.SetPop(key(), 0) //nolint:errcheck
-		}
-	case "sdiffstore", "sinterstore", "sunionstore":
-		if len(args) >= 3 {
-			var members [][]byte
-			var err error
-			switch name {
-			case "sdiffstore":
-				members, err = st.SetDiff(args[2:])
-			case "sinterstore":
-				members, err = st.SetInter(args[2:])
-			default:
-				members, err = st.SetUnion(args[2:])
-			}
-			if err == nil {
-				st.SetStore(args[1], members) //nolint:errcheck
-			}
-		}
-	case "sadd":
-		st.SetAdd(key(), args[2:]...)
-	case "srem":
-		st.SetRem(key(), args[2:]...)
-	case "zpopmin", "zpopmax":
-		// ZPOPMIN|ZPOPMAX key [count]
-		if len(args) >= 2 {
-			count := 0
-			if len(args) == 3 {
-				if n, err := strconv.Atoi(string(args[2])); err == nil {
-					count = n
-				}
-			}
-			st.ZPop(key(), count, name == "zpopmin") //nolint:errcheck
-		}
-	case "zremrangebyrank":
-		// ZREMRANGEBYRANK key start stop
-		if len(args) == 4 {
-			start, err1 := strconv.Atoi(string(args[2]))
-			stop, err2 := strconv.Atoi(string(args[3]))
-			if err1 == nil && err2 == nil {
-				st.ZRemRangeByRank(key(), start, stop) //nolint:errcheck
-			}
-		}
-	case "zunionstore", "zinterstore":
-		// ZUNIONSTORE|ZINTERSTORE dest numkeys key [key ...]
-		if len(args) >= 4 {
-			if n, err := strconv.Atoi(string(args[2])); err == nil && n >= 1 && len(args) >= 3+n {
-				keys := args[3 : 3+n]
-				if name == "zunionstore" {
-					st.ZUnionStore(args[1], keys, nil, store.AggregateSum) //nolint:errcheck
-				} else {
-					st.ZInterStore(args[1], keys, nil, store.AggregateSum) //nolint:errcheck
-				}
-			}
-		}
-	case "zdiffstore":
-		// ZDIFFSTORE dest numkeys key [key ...]
-		if len(args) >= 4 {
-			if n, err := strconv.Atoi(string(args[2])); err == nil && n >= 1 && len(args) >= 3+n {
-				st.ZDiffStore(args[1], args[3:3+n]) //nolint:errcheck
-			}
-		}
-	case "zincrby":
-		// ZINCRBY key increment member
-		if len(args) == 4 {
-			if d, err := strconv.ParseFloat(string(args[2]), 64); err == nil {
-				st.ZIncrBy(key(), d, args[3]) //nolint:errcheck
-			}
-		}
-	case "zadd":
-		if len(args) >= 4 && len(args)%2 == 0 {
-			for i := 2; i+1 < len(args); i += 2 {
-				if score, err := strconv.ParseFloat(string(args[i]), 64); err == nil {
-					st.ZAdd(key(), score, args[i+1])
-				}
-			}
-		}
-	case "zrem":
-		st.ZRem(key(), args[2:]...)
-	case "xadd":
-		applyAOFStreamAdd(st, args)
-	case "xdel":
-		applyAOFStreamDel(st, args)
-	case "xtrim":
-		applyAOFStreamTrim(st, args)
-	case "xsetid":
-		applyAOFStreamSetID(st, args)
-	case "xgroup":
-		applyAOFStreamGroup(st, args)
-	case "xack":
-		applyAOFStreamAck(st, args)
-	case "xclaim":
-		applyAOFStreamClaim(st, args)
-	}
-	return nil
-}
-
-// applyAOFStreamGroup replays an XGROUP command.
-func applyAOFStreamGroup(st *store.Store, args [][]byte) {
-	cmd, err := store.ParseStreamGroupArgs(args[1:])
-	if err != nil {
-		return
-	}
-	id := cmd.ID
-	if cmd.IDIsDollar {
-		last, ok, err := st.StreamLastID(cmd.Key)
-		if err == nil && ok {
-			id = last
-		}
-	}
-	switch cmd.Sub {
-	case "CREATE":
-		st.StreamGroupCreate(cmd.Key, cmd.Group, id, cmd.EntriesRead, cmd.SetEntriesRead, cmd.MkStream) //nolint:errcheck
-	case "DESTROY":
-		st.StreamGroupDestroy(cmd.Key, cmd.Group) //nolint:errcheck
-	case "CREATECONSUMER":
-		st.StreamGroupCreateConsumer(cmd.Key, cmd.Group, cmd.Consumer) //nolint:errcheck
-	case "DELCONSUMER":
-		st.StreamGroupDelConsumer(cmd.Key, cmd.Group, cmd.Consumer) //nolint:errcheck
-	case "SETID":
-		st.StreamGroupSetID(cmd.Key, cmd.Group, id, cmd.EntriesRead, cmd.SetEntriesRead) //nolint:errcheck
-	}
-}
-
-// applyAOFStreamAck replays an XACK command.
-func applyAOFStreamAck(st *store.Store, args [][]byte) {
-	// XACK key group id [id ...]
-	if len(args) < 4 {
-		return
-	}
-	ids := make([]store.StreamID, 0, len(args)-3)
-	for _, arg := range args[3:] {
-		id, ok := store.ParseStreamIDStrict(string(arg), 0, nil)
-		if !ok {
-			return
-		}
-		ids = append(ids, id)
-	}
-	st.StreamAck(args[1], string(args[2]), ids) //nolint:errcheck
-}
-
-// applyAOFStreamClaim replays an XCLAIM command.
-func applyAOFStreamClaim(st *store.Store, args [][]byte) {
-	cmd, err := store.ParseStreamClaimArgs(args[1:])
-	if err != nil {
-		return
-	}
-	st.StreamClaim(cmd.Key, cmd.Group, cmd.Consumer, cmd.MinIdle, cmd.IDs, cmd.Options) //nolint:errcheck
-}
-
-// applyAOFStreamAdd replays an XADD command.
-func applyAOFStreamAdd(st *store.Store, args [][]byte) {
-	// XADD key [options] id field value ...
-	if len(args) < 5 {
-		return
-	}
-	parsed, err := store.ParseStreamAddArgs(args[2:])
-	if err != nil {
-		return
-	}
-	st.StreamAdd(args[1], parsed.Mode, parsed.ID, parsed.Fields, parsed.NoMkStream) //nolint:errcheck
-	if parsed.HasTrim {
-		st.StreamTrim(args[1], parsed.Trim) //nolint:errcheck
-	}
-}
-
-// applyAOFStreamDel replays an XDEL command.
-func applyAOFStreamDel(st *store.Store, args [][]byte) {
-	// XDEL key id [id ...]
-	if len(args) < 3 {
-		return
-	}
-	ids := make([]store.StreamID, 0, len(args)-2)
-	for _, arg := range args[2:] {
-		id, ok := store.ParseStreamIDStrict(string(arg), 0, nil)
-		if !ok {
-			return
-		}
-		ids = append(ids, id)
-	}
-	st.StreamDelete(args[1], ids) //nolint:errcheck
-}
-
-// applyAOFStreamTrim replays an XTRIM command.
-func applyAOFStreamTrim(st *store.Store, args [][]byte) {
-	// XTRIM key MAXLEN|MINID [~|=] threshold [LIMIT count]
-	if len(args) < 4 {
-		return
-	}
-	trim, err := store.ParseStreamTrimArgs(args[2:])
-	if err != nil {
-		return
-	}
-	st.StreamTrim(args[1], trim) //nolint:errcheck
-}
-
-// applyAOFStreamSetID replays an XSETID command.
-func applyAOFStreamSetID(st *store.Store, args [][]byte) {
-	// XSETID key id [ENTRIESADDED count]
-	if len(args) < 3 {
-		return
-	}
-	id, ok := store.ParseStreamIDStrict(string(args[2]), 0, nil)
-	if !ok {
-		return
-	}
-	entriesAdded := uint64(0)
-	setEntriesAdded := false
-	var maxDeletedID *store.StreamID
-	for i := 3; i+1 < len(args); i += 2 {
-		switch strings.ToUpper(string(args[i])) {
-		case "ENTRIESADDED":
-			if n, err := strconv.ParseUint(string(args[i+1]), 10, 64); err == nil {
-				entriesAdded = n
-				setEntriesAdded = true
-			}
-		case "MAXDELETEDID":
-			if m, ok := store.ParseStreamIDStrict(string(args[i+1]), 0, nil); ok {
-				maxDeletedID = &m
-			}
-		}
-	}
-	st.StreamSetID(args[1], id, entriesAdded, setEntriesAdded, maxDeletedID) //nolint:errcheck
-}
-
 // RewriteAOF writes a compact command stream representing the current dataset
 // to path (atomically). The stream starts with FLUSHALL so replay produces the
 // dataset regardless of prior state.
@@ -985,7 +403,7 @@ func RewriteAOF(path string, stores []*store.Store, now time.Time) error {
 // (starting with FLUSHALL) into w. Every database is preceded by a SELECT,
 // so the replay restores all of them.
 func DatasetCommands(w io.Writer, stores []*store.Store, now time.Time) error {
-	if _, err := w.Write(EncodeCommand([][]byte{[]byte("FLUSHALL")})); err != nil {
+	if _, err := w.Write(resp.EncodeCommand([][]byte{[]byte("FLUSHALL")})); err != nil {
 		return err
 	}
 	for i, st := range stores {
@@ -998,13 +416,13 @@ func DatasetCommands(w io.Writer, stores []*store.Store, now time.Time) error {
 
 // datasetCommandsFor writes the commands that rebuild a single database.
 func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) error {
-	if _, err := w.Write(EncodeCommand([][]byte{[]byte("SELECT"), []byte(strconv.Itoa(db))})); err != nil {
+	if _, err := w.Write(resp.EncodeCommand([][]byte{[]byte("SELECT"), []byte(strconv.Itoa(db))})); err != nil {
 		return err
 	}
 	return st.ForEach(func(key string, e *store.Entry) error {
 		switch e.Type {
 		case store.TypeString:
-			if _, err := w.Write(EncodeCommand([][]byte{[]byte("SET"), []byte(key), e.Str})); err != nil {
+			if _, err := w.Write(resp.EncodeCommand([][]byte{[]byte("SET"), []byte(key), e.Str})); err != nil {
 				return err
 			}
 		case store.TypeList:
@@ -1012,7 +430,7 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 			for _, chunk := range chunkBytes(elems, 64) {
 				args := [][]byte{[]byte("RPUSH"), []byte(key)}
 				args = append(args, chunk...)
-				if _, err := w.Write(EncodeCommand(args)); err != nil {
+				if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
 					return err
 				}
 			}
@@ -1024,7 +442,7 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 			for _, chunk := range chunkBytes(flat, 64) {
 				args := [][]byte{[]byte("HSET"), []byte(key)}
 				args = append(args, chunk...)
-				if _, err := w.Write(EncodeCommand(args)); err != nil {
+				if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
 					return err
 				}
 			}
@@ -1036,7 +454,7 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 			for _, chunk := range chunkBytes(members, 64) {
 				args := [][]byte{[]byte("SADD"), []byte(key)}
 				args = append(args, chunk...)
-				if _, err := w.Write(EncodeCommand(args)); err != nil {
+				if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
 					return err
 				}
 			}
@@ -1049,7 +467,7 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 			for _, chunk := range chunkBytes(pairs, 64) {
 				args := [][]byte{[]byte("ZADD"), []byte(key)}
 				args = append(args, chunk...)
-				if _, err := w.Write(EncodeCommand(args)); err != nil {
+				if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
 					return err
 				}
 			}
@@ -1059,7 +477,7 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 			for _, entry := range e.Stream.Entries() {
 				args := [][]byte{[]byte("XADD"), []byte(key), []byte(entry.ID.String())}
 				args = append(args, entry.Fields...)
-				if _, err := w.Write(EncodeCommand(args)); err != nil {
+				if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
 					return err
 				}
 			}
@@ -1075,7 +493,7 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 					[]byte(g.Info.LastID.String()),
 					[]byte("ENTRIESREAD"), []byte(strconv.FormatUint(g.Info.EntriesRead, 10)),
 				}
-				if _, err := w.Write(EncodeCommand(create)); err != nil {
+				if _, err := w.Write(resp.EncodeCommand(create)); err != nil {
 					return err
 				}
 				for _, p := range g.Pending {
@@ -1086,14 +504,14 @@ func datasetCommandsFor(w io.Writer, st *store.Store, db int, now time.Time) err
 						[]byte("RETRYCOUNT"), []byte(strconv.FormatInt(p.DeliveryCount, 10)),
 						[]byte("FORCE"), []byte("JUSTID"),
 					}
-					if _, err := w.Write(EncodeCommand(claim)); err != nil {
+					if _, err := w.Write(resp.EncodeCommand(claim)); err != nil {
 						return err
 					}
 				}
 			}
 		}
 		if !e.ExpiresAt.IsZero() {
-			if _, err := w.Write(EncodeCommand([][]byte{[]byte("PEXPIREAT"), []byte(key), itoa(e.ExpiresAt.UnixMilli())})); err != nil {
+			if _, err := w.Write(resp.EncodeCommand([][]byte{[]byte("PEXPIREAT"), []byte(key), itoa(e.ExpiresAt.UnixMilli())})); err != nil {
 				return err
 			}
 		}

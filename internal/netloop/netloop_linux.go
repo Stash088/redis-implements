@@ -144,7 +144,7 @@ func listen(addr string, reusePort bool) (int, error) {
 		return -1, err
 	}
 	if reusePort {
-		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
+		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, soReusePort, 1); err != nil {
 			syscall.Close(fd)
 			return -1, err
 		}

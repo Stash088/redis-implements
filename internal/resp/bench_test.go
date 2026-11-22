@@ -8,6 +8,27 @@ import (
 	"github.com/amir/redis-implements/internal/resp"
 )
 
+// commandSink keeps the result of the encoder benchmarks observable.
+var commandSink []byte
+
+func BenchmarkEncodeCommand(b *testing.B) {
+	args := [][]byte{[]byte("SET"), []byte("key"), []byte("value")}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		commandSink = resp.EncodeCommand(args)
+	}
+}
+
+func BenchmarkAppendCommand(b *testing.B) {
+	args := [][]byte{[]byte("SET"), []byte("key"), []byte("value")}
+	dst := make([]byte, 0, 64)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		dst = resp.AppendCommand(dst[:0], args)
+	}
+	commandSink = dst
+}
+
 func BenchmarkWriterSimpleString(b *testing.B) {
 	w := resp.NewWriter(io.Discard)
 	b.ReportAllocs()

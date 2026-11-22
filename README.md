@@ -224,8 +224,10 @@ redis-cli
 ## Структура проекта
 
 ```
-├── cmd/redis-server/        # точка входа сервера
+├── cmd/redis-server/        # CLI: флаги, сигналы, запуск через internal/app
 └── internal/
+    ├── app/                 # композиция: stores, restore, AOF, listeners, workers, pprof
+    ├── replay/              # общий applier команд для AOF-загрузчика и реплик
     ├── resp/                # протокол RESP: value.go, reader.go, writer.go
     ├── store/               # типизированное хранилище
     │   ├── store.go         # Entry {Type, контейнеры, ExpiresAt}, строковые операции
@@ -235,7 +237,7 @@ redis-cli
     │   ├── zset.go          # zset = dict + skiplist
     │   ├── expiry.go        # активное истечение (фоновая горутина)
     │   └── snapshot.go      # ForEach/RestoreEntry для персистентности
-    ├── server/              # TCP-сервер и обработчики команд (вкл. SAVE/BGSAVE/BGREWRITEAOF)
+    ├── server/              # TCP-сервер: общий ingress для goroutine- и event-loop-транспортов
     ├── persist/             # RDB (настоящий формат) + AOF + CRC64 + listpack/LZF
     └── config/              # флаги --host/--port/--dir/--save/--appendonly/...
 ```

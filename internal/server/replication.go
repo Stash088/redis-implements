@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/amir/redis-implements/internal/persist"
 	"github.com/amir/redis-implements/internal/resp"
 )
 
@@ -261,11 +260,11 @@ func (s *Server) appendStream(args [][]byte, db int) {
 	r.mu.Lock()
 	var sel []byte
 	if db >= 0 && r.db != db {
-		sel = persist.EncodeCommand([][]byte{[]byte("select"), []byte(strconv.Itoa(db))})
+		sel = resp.EncodeCommand([][]byte{[]byte("select"), []byte(strconv.Itoa(db))})
 		r.emitLocked(sel)
 		r.db = db
 	}
-	enc := persist.EncodeCommand(args)
+	enc := resp.EncodeCommand(args)
 	r.emitLocked(enc)
 	reps := make([]*replica, 0, len(r.reps))
 	for _, rep := range r.reps {

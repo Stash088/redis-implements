@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -395,12 +394,5 @@ func TestAppenderPolicies(t *testing.T) {
 		if !bytes.Contains(data, []byte("SET")) {
 			t.Errorf("policy %d: command missing", p)
 		}
-	}
-}
-
-func TestEncodeCommand(t *testing.T) {
-	b := EncodeCommand([][]byte{[]byte("SET"), []byte("k"), []byte("v")})
-	if !strings.HasPrefix(string(b), "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n") {
-		t.Errorf("bad encoding: %q", b)
 	}
 }
