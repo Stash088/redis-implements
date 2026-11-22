@@ -345,7 +345,7 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
 - [x] Поток пишущих команд на реплики, backlog, частичный resync
       (`PSYNC … +CONTINUE`), команда `WAIT`, `WAITAOF`.
 
-### 🚧 M24 — Битовые операции (сделана 14.11, ветка `feat/m24-bitmap`)
+### ✅ M24 — Битовые операции
 
 - [x] `SETBIT`/`GETBIT`: биты строки, дополнение нулями до адресуемого байта,
       оффсеты до 2³²−1, TTL сохраняется, copy-on-write.
@@ -363,7 +363,7 @@ zskiplist), TTL, TCP-сервер, персистентность (RDB в нас
 - [x] Сценарий сверки `testdata/compat/bitmap.txt`; семантика сверена с
       `src/bitops.c` Redis 8.2.
 
-### 🚧 M25 — HyperLogLog (реализована локально 22.11, ветка `codex/m25-hyperloglog`, ждёт слияния)
+### ✅ M25 — HyperLogLog
 
 - [x] `PFADD`/`PFCOUNT`/`PFMERGE`: обычное строковое значение `TypeString` с
       заголовком HYLL, sparse- и dense-представлениями Redis 8.2; бинарные

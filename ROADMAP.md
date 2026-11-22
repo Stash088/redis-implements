@@ -227,8 +227,8 @@ redis-implements/
 | **P10** | Несколько event loop'ов: `--loops N`, каждый цикл владеет своим слушателем на порту (`SO_REUSEPORT`), блокирующие команды и Pub/Sub между циклами | ✅ слито |
 | **M22** | Репликация: каркас — `REPLICAOF`/`SLAVEOF` (команда и `--replicaof`), `REPLCONF`, `PSYNC`/`SYNC` (full sync, RDB с длиной), `ROLE`, `INFO replication`, `-READONLY` на реплике; интероп с redis-server 8.2 в обе стороны | ✅ слито |
 | **M23** | Репликация: инкрементальная — backlog, `PSYNC … +CONTINUE` (частичный resync, в т.ч. при переподключении реплики), `REPLCONF ACK`/`GETACK`, `WAIT`, `WAITAOF` | ✅ слито |
-| **M24** | Битовые операции: `SETBIT`/`GETBIT`/`BITCOUNT`/`BITPOS` (байты и биты, отрицательные индексы), `BITOP` с восемью операциями (включая `DIFF`/`DIFF1`/`ANDOR`/`ONE` из Redis 8.2), `BITFIELD`/`BITFIELD_RO` (`#смещения`, `OVERFLOW WRAP/SAT/FAIL`) | 🚧 MR |
-| **M25** | HyperLogLog: `PFADD`/`PFCOUNT`/`PFMERGE` с бинарными представлениями Redis 8.2 (sparse/dense), совместимыми хешированием, регистрами, оценкой мощности и кэшем; AOF/replication, TTL и WATCH | 🚧 локально, ждёт слияния |
+| **M24** | Битовые операции: `SETBIT`/`GETBIT`/`BITCOUNT`/`BITPOS` (байты и биты, отрицательные индексы), `BITOP` с восемью операциями (включая `DIFF`/`DIFF1`/`ANDOR`/`ONE` из Redis 8.2), `BITFIELD`/`BITFIELD_RO` (`#смещения`, `OVERFLOW WRAP/SAT/FAIL`) | ✅ слито |
+| **M25** | HyperLogLog: `PFADD`/`PFCOUNT`/`PFMERGE` с бинарными представлениями Redis 8.2 (sparse/dense), совместимыми хешированием, регистрами, оценкой мощности и кэшем; AOF/replication, TTL и WATCH | ✅ слито |
 
 Отложено до отдельного решения: кластер, Lua (`EVAL`), TLS/Unix-сокеты, `ACL`,
 Geo.
